@@ -221,7 +221,7 @@ with tab5:
     if uploaded_file2:
         df2 = pd.read_excel(uploaded_file2)
         st.write("原始数据预览", df2.head())
-        year = st.number_input("年份", value=2025, key="date_year")
+        year = st.number_input("年份", value=2026, key="date_year")
         date_col = st.text_input("日期列名", value="日期", key="date_col")
 
 
