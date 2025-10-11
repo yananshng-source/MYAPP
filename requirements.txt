@@ -1,6 +1,8 @@
 streamlit
 pandas
+openpyxl
+pillow
+pytesseract
 requests
 beautifulsoup4
 lxml
-openpyxl
