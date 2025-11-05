@@ -672,7 +672,7 @@ with tab6:
 
                 if len(result_df) == 0:
                     st.error("警告：没有生成任何数据，请检查源数据文件")
-                    return
+                    st.stop()
 
                 # 显示处理结果
                 st.subheader("✅ 处理结果")
