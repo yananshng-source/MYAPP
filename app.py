@@ -5,13 +5,12 @@ import pandas as pd
 from io import BytesIO
 from PIL import Image, ImageOps, ImageEnhance
 import pytesseract
+import re
 import requests
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
-import re
 from datetime import datetime
 import logging
-import traceback
 from typing import Iterable, Any
 
 # ------------------------ Config ------------------------
@@ -20,8 +19,7 @@ DEFAULT_TIMEOUT = 15
 REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 VERIFY_SSL = False
 MAX_LOG_LINES = 200
-
-# 配置 tesseract 路径（修改为你本地路径）
+# 修改为你本地 tesseract 可执行文件路径
 pytesseract.pytesseract.tesseract_cmd = r"E:\tesseract-ocr\tesseract.exe"
 
 # ------------------------ Logging ------------------------
@@ -46,8 +44,6 @@ def log(msg, level="info"):
         logger.warning(msg)
     elif level == "error":
         logger.error(msg)
-    else:
-        logger.debug(msg)
 
 def progress_iter(it: Iterable[Any], text="处理中...", progress_key=None):
     items = list(it)
@@ -74,6 +70,11 @@ def progress_iter(it: Iterable[Any], text="处理中...", progress_key=None):
         if progress_key in st.session_state:
             del st.session_state[progress_key]
 
+def ensure_dir(path):
+    os.makedirs(path, exist_ok=True)
+    return path
+
+# ------------------------ Helpers ------------------------
 def safe_requests_get(session: requests.Session, url: str, **kwargs):
     try:
         resp = session.get(url, timeout=kwargs.get("timeout", DEFAULT_TIMEOUT),
@@ -83,25 +84,18 @@ def safe_requests_get(session: requests.Session, url: str, **kwargs):
     except Exception as e:
         raise
 
-def ensure_dir(path):
-    os.makedirs(path, exist_ok=True)
-    return path
-
-# ------------------------ 核心功能 ------------------------
-# Tab1: 网页表格抓取
+# ------------------------ 网页表格抓取 ------------------------
 def scrape_table(url_list, group_cols):
     session = requests.Session()
     sheet_data = {}
     all_data = []
-    errors = []
 
-    enumerated = list(enumerate(url_list, start=1))
-    for idx, url in progress_iter(enumerated, text="抓取网页表格中"):
+    for idx, url in progress_iter(list(enumerate(url_list, start=1)), text="抓取网页表格中"):
         try:
             resp = safe_requests_get(session, url)
             dfs = pd.read_html(resp.text)
             for i, df in enumerate(dfs):
-                name = f"网页{idx}_表{i+1}"
+                name = f"网页{idx}_表{i + 1}"
                 sheet_data[name] = df
                 all_data.append(df)
                 log(f"抓取到表格: {name} ({len(df)} 行)")
@@ -113,19 +107,20 @@ def scrape_table(url_list, group_cols):
         output = BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             for name, df in sheet_data.items():
-                df.to_excel(writer, sheet_name=name[:31], index=False)
+                safe_name = name[:31]
+                df.to_excel(writer, sheet_name=safe_name, index=False)
             if all_data:
                 try:
                     pd.concat(all_data, ignore_index=True).to_excel(writer, sheet_name="汇总", index=False)
-                except:
-                    pass
+                except Exception as e:
+                    log(f"合并汇总表失败: {e}", level="warning")
         output.seek(0)
         return output
     else:
         log("未抓取到任何表格。", level="warning")
         return None
 
-# Tab2: 网页图片下载
+# ------------------------ 网页图片下载 ------------------------
 def download_images_from_urls(url_list, output_dir=None):
     if output_dir is None:
         output_dir = os.path.join(os.path.expanduser("~"), "Desktop", "downloaded_images")
@@ -134,14 +129,16 @@ def download_images_from_urls(url_list, output_dir=None):
     session.headers.update(REQUEST_HEADERS)
     downloaded_files = []
 
-    enumerated = list(enumerate(url_list, start=1))
-    for idx, url in progress_iter(enumerated, text="下载网页图片中"):
+    for idx, url in progress_iter(list(enumerate(url_list, start=1)), text="下载网页图片中"):
         try:
             resp = safe_requests_get(session, url)
             soup = BeautifulSoup(resp.content, "html.parser")
+            title_tag = soup.find("title")
+            title = title_tag.string.strip() if title_tag else f"网页{idx}"
+            safe_title = "".join([c if c not in r'\/:*?"<>|' else "_" for c in title])
             imgs = soup.find_all("img")
             for i, img_tag in enumerate(imgs, start=1):
-                src = img_tag.get("src") or img_tag.get("data-src") or img_tag.get("data-original")
+                src = img_tag.get("src") or img_tag.get("data-src")
                 if not src:
                     continue
                 full_url = urljoin(url, src.strip())
@@ -150,39 +147,43 @@ def download_images_from_urls(url_list, output_dir=None):
                     ext = os.path.splitext(full_url)[1]
                     if not ext or len(ext) > 6:
                         ext = ".jpg"
-                    fname = f"img_{idx}_{i}{ext}"
+                    fname = f"{safe_title}_{i}{ext}"
                     fpath = os.path.join(output_dir, fname)
                     with open(fpath, "wb") as f:
                         f.write(resp_img.content)
                     downloaded_files.append(fpath)
-                except:
+                except Exception as e:
+                    log(f"图片下载失败: {full_url} -> {e}", level="warning")
                     continue
-        except:
+        except Exception as e:
+            log(f"页面请求失败: {url} -> {e}", level="warning")
             continue
     return output_dir, downloaded_files
 
-# Tab3: 图片裁剪+OCR页码重命名
-def crop_and_ocr_images(folder_path, x_center, y_center, crop_width, crop_height):
+# ------------------------ 图片裁剪 + OCR ------------------------
+def crop_and_ocr_images_from_folder(folder_path, x_center, y_center, crop_width, crop_height):
     output_folder = os.path.join(os.path.expanduser("~"), "Desktop", "crop_results")
     ensure_dir(output_folder)
     img_exts = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
-    files = [f for f in os.listdir(folder_path) if f.lower().endswith(img_exts)]
+    files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.lower().endswith(img_exts)]
     used_pages = set()
-    failed_files = []
-    for filename in progress_iter(files, text="裁剪+OCR识别中"):
+    results = []
+
+    for image_path in progress_iter(files, text="裁剪并识别页码"):
         try:
-            img_path = os.path.join(folder_path, filename)
-            img = Image.open(img_path).convert("RGB")
+            filename = os.path.basename(image_path)
+            img = Image.open(image_path).convert("RGB")
             width, height = img.size
             left = max(0, int(x_center - crop_width // 2))
             right = min(width, int(x_center + crop_width // 2))
             top = max(0, int(y_center - crop_height // 2))
             bottom = min(height, int(y_center + crop_height // 2))
             crop_img = img.crop((left, top, right, bottom))
-            crop_img = crop_img.resize((crop_img.width*2, crop_img.height*2), Image.LANCZOS)
+            crop_img = crop_img.resize((crop_img.width * 2, crop_img.height * 2), Image.LANCZOS)
             gray = ImageOps.grayscale(crop_img)
             gray = ImageEnhance.Contrast(gray).enhance(3.0)
             bw = gray.point(lambda x: 0 if x < 128 else 255, '1')
+
             text = pytesseract.image_to_string(bw, config='--psm 7 -c tessedit_char_whitelist=0123456789')
             matches = re.findall(r'\d+', text)
             if matches:
@@ -191,180 +192,124 @@ def crop_and_ocr_images(folder_path, x_center, y_center, crop_width, crop_height
                     page_number += 1
                 used_pages.add(page_number)
             else:
-                failed_files.append(filename)
                 page_number = max(used_pages) + 1 if used_pages else 1
                 used_pages.add(page_number)
+
             ext = os.path.splitext(filename)[1]
             new_name = f"{page_number:03d}{ext}"
-            new_path = os.path.join(folder_path, new_name)
-            os.rename(img_path, new_path)
+            new_path = os.path.join(output_folder, new_name)
+            img.save(new_path)
             crop_save_path = os.path.join(output_folder, f"crop_{new_name}")
             bw.save(crop_save_path)
-        except:
-            failed_files.append(filename)
+            results.append((filename, new_name))
+            log(f"{filename} -> {new_name} （裁剪结果已保存）")
+        except Exception as e:
+            log(f"{filename} 处理失败: {e}", level="warning")
             continue
-    return output_folder, failed_files
+    return output_folder, results
 
-# Tab4: 高校选科转换
-def convert_selection_requirements(df):
-    subject_mapping = {'物理': '物', '化学': '化', '生物': '生', '历史': '历', '地理': '地', '政治': '政',
-                       '思想政治': '政'}
-    df_new = df.copy()
-    df_new['首选科目'] = ''
-    df_new['选科要求类型'] = ''
-    df_new['次选'] = ''
-    for idx, row in progress_iter(list(df.iterrows()), text="选科转换中"):
-        try:
-            i, r = row
-            text = str(r.get('选科要求', '')).strip()
-            cat = str(r.get('招生科类', '')).strip()
-            subjects = [subject_mapping.get(s, s) for s in re.findall(r'物理|化学|生物|历史|地理|政治|思想政治', text)]
-            first = ''
-            for s_full, s_short in subject_mapping.items():
-                if f'首选{s_full}' in text:
-                    first = s_short
-            if not first:
-                if '物理' in cat:
-                    first = '物'
-                elif '历史' in cat:
-                    first = '历'
-            remaining = [s for s in subjects if s != first]
-            second = ''.join(remaining)
-            if '不限' in text:
-                req_type = '不限科目专业组'
-            elif len(remaining) >= 1:
-                req_type = '多门选考'
-            else:
-                req_type = '单科、多科均需选考'
-            df_new.at[i, '首选科目'] = first
-            df_new.at[i, '次选'] = second
-            df_new.at[i, '选科要求类型'] = req_type
-        except:
-            continue
-    return df_new
-
-# Tab5: Excel日期处理
-def safe_parse_datetime(datetime_str, year):
-    if pd.isna(datetime_str):
-        return None
-    datetime_str = str(datetime_str).strip()
-    if not re.search(r'(^|\D)\d{4}(\D|$)', datetime_str):
-        datetime_str = f"{year}年{datetime_str}"
-    patterns = [(r'(\d{4})年(\d{1,2})月(\d{1,2})日(\d{1,2}):(\d{1,2})', '%Y年%m月%d日%H:%M'),
-                (r'(\d{4})年(\d{1,2})月(\d{1,2})日', '%Y年%m月%d日'),
-                (r'(\d{4})-(\d{1,2})-(\d{1,2})', '%Y-%m-%d'),
-                (r'(\d{4})/(\d{1,2})/(\d{1,2})', '%Y/%m/%d')]
-    for pattern, fmt in patterns:
-        try:
-            dt = datetime.strptime(datetime_str, fmt)
-            return dt
-        except:
-            continue
-    return None
-
-def process_date_range(date_str, year):
-    if pd.isna(date_str):
-        return date_str, "", ""
-    date_str = str(date_str).strip()
-    if '-' in date_str:
-        start_str, end_str = date_str.split('-', 1)
-        start_dt = safe_parse_datetime(start_str, year)
-        end_dt = safe_parse_datetime(end_str, year)
-        if not start_dt or not end_dt:
-            return date_str, "格式错误", "格式错误"
-        if ':' not in start_str:
-            start_dt = start_dt.replace(hour=0, minute=0, second=0)
-        if ':' not in end_str:
-            end_dt = end_dt.replace(hour=23, minute=59, second=59)
-        return date_str, start_dt, end_dt
-    else:
-        dt = safe_parse_datetime(date_str, year)
-        return date_str, dt, dt
+# ------------------------ 文件夹选择器 ------------------------
+def folder_selector(label="选择文件夹"):
+    from tkinter import Tk, filedialog
+    root = Tk()
+    root.withdraw()
+    path = filedialog.askdirectory(title=label)
+    root.destroy()
+    return path
 
 # ------------------------ Streamlit UI ------------------------
-st.title("🧰 综合处理工具箱 - 完整版（带进度条 & 日志）")
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "网页表格抓取",
-    "网页图片下载",
-    "图片裁剪+OCR页码",
-    "高校选科转换",
-    "Excel日期处理"
+st.title("🧰 综合处理工具箱 - 完整版（带OCR页码识别）")
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "网页表格抓取", "网页图片下载", "图片裁剪+OCR", "高校选科转换", "Excel日期处理", "运行日志"
 ])
 
-with st.sidebar.expander("运行日志（最新）", expanded=True):
-    for line in st.session_state.recent_logs[-200:]:
-        st.text(line)
+# ------------------------ Tab3 文件夹选择 ------------------------
+with tab3:
+    st.subheader("图片裁剪 + OCR页码重命名")
+    folder_path_input = st.text_input("选择图片文件夹（点击按钮选择）")
+    if st.button("选择文件夹"):
+        folder_path_input = folder_selector()
+        st.text_input("选择图片文件夹（点击按钮选择）", value=folder_path_input, key="folder_path_display")
+    x_center = st.number_input("页码中心X", value=788)
+    y_center = st.number_input("页码中心Y", value=1955)
+    crop_w = st.number_input("裁剪宽度(px)", value=200)
+    crop_h = st.number_input("裁剪高度(px)", value=50)
+    if st.button("开始裁剪+OCR"):
+        if folder_path_input and os.path.exists(folder_path_input):
+            output_folder, results = crop_and_ocr_images_from_folder(folder_path_input, x_center, y_center, crop_w, crop_h)
+            st.success(f"完成！裁剪+OCR结果已保存到：{output_folder}")
+            st.table(pd.DataFrame(results, columns=["原文件名", "新文件名"]))
+        else:
+            st.warning("请提供有效图片文件夹路径")
 
-# ------------------------ Tab1: 网页表格抓取 ------------------------
+# ------------------------ 其它 Tabs 可继续放置前面代码 ------------------------
+# Tab1: 网页表格抓取
 with tab1:
     st.subheader("网页表格抓取")
-    urls_text = st.text_area("输入网页URL，每行一个", height=150)
-    if st.button("抓取表格", key="scrape_table_btn"):
-        urls = [u.strip() for u in urls_text.strip().splitlines() if u.strip()]
-        if urls:
-            excel_bytes = scrape_table(urls, group_cols=[])
-            if excel_bytes:
-                st.download_button("下载抓取结果", data=excel_bytes, file_name="抓取结果.xlsx")
+    urls_text = st.text_area("输入网页URL列表（每行一个）", height=160)
+    group_cols = st.text_input("分组列（逗号分隔，可选）")
+    if st.button("抓取表格", key="scrape_btn"):
+        url_list = [u.strip() for u in urls_text.splitlines() if u.strip()]
+        if url_list:
+            output = scrape_table(url_list, group_cols)
+            if output:
+                st.download_button("下载抓取表格", data=output.getvalue(), file_name="网页抓取.xlsx")
             else:
                 st.warning("未抓取到表格")
         else:
             st.warning("请提供有效URL列表")
 
-# ------------------------ Tab2: 网页图片下载 ------------------------
+# Tab2: 网页图片下载
 with tab2:
     st.subheader("网页图片下载")
-    urls_text2 = st.text_area("输入网页URL，每行一个", height=150, key="img_urls")
-    if st.button("下载图片", key="download_imgs_btn"):
-        urls = [u.strip() for u in urls_text2.strip().splitlines() if u.strip()]
-        if urls:
-            folder, files = download_images_from_urls(urls)
-            st.success(f"下载完成，保存到: {folder}")
-            st.write(f"下载图片数量: {len(files)}")
-        else:
-            st.warning("请提供有效URL列表")
+    urls_text2 = st.text_area("输入网页URL列表（每行一个）", height=160)
+    outdir_input = st.text_input("输出文件夹（可选）")
+    if st.button("下载网页图片", key="img_download_btn"):
+        url_list = [u.strip() for u in urls_text2.splitlines() if u.strip()]
+        output_dir = outdir_input.strip() or None
+        if url_list:
+            folder, files = download_images_from_urls(url_list, output_dir)[:2]
+            st.success(f"下载完成，共 {len(files)} 张图片，保存到 {folder}")
 
-# ------------------------ Tab3: 图片裁剪+OCR页码 ------------------------
-with tab3:
-    st.subheader("图片裁剪 + OCR页码识别重命名")
-    folder_path = st.text_input("图片文件夹路径（绝对路径）", key="img_folder_ocr")
-    x_center = st.number_input("页码中心X", value=788, key="x_center_ocr")
-    y_center = st.number_input("页码中心Y", value=1955, key="y_center_ocr")
-    crop_w = st.number_input("裁剪宽度(px)", value=200, key="crop_w_ocr")
-    crop_h = st.number_input("裁剪高度(px)", value=50, key="crop_h_ocr")
-    if st.button("裁剪并识别页码", key="crop_ocr_btn"):
-        folder_path = folder_path.strip()
-        if not folder_path or not os.path.isdir(folder_path):
-            st.warning(f"请提供有效图片文件夹路径：{folder_path}")
-        else:
-            output_folder, failed_files = crop_and_ocr_images(folder_path, x_center, y_center, crop_w, crop_h)
-            st.success(f"完成！裁剪结果已保存到桌面: {output_folder}，原图片已按页码重命名")
-            if failed_files:
-                st.warning(f"OCR识别失败的图片: {', '.join(failed_files)}")
-
-# ------------------------ Tab4: 高校选科转换 ------------------------
+# Tab4: 高校选科转换
 with tab4:
     st.subheader("高校选科转换")
-    uploaded_file = st.file_uploader("上传 Excel 文件", type=["xlsx"])
-    if uploaded_file:
-        df = pd.read_excel(uploaded_file)
+    uploaded_excel = st.file_uploader("上传Excel文件", type=["xlsx"])
+    if uploaded_excel and st.button("转换选科", key="sel_btn"):
+        df = pd.read_excel(uploaded_excel)
         df_new = convert_selection_requirements(df)
-        st.dataframe(df_new.head(10))
         output = BytesIO()
         df_new.to_excel(output, index=False)
         output.seek(0)
-        st.download_button("下载转换结果", data=output, file_name="选科转换结果.xlsx")
+        st.download_button("下载转换结果", data=output.getvalue(), file_name="选科转换.xlsx")
 
-# ------------------------ Tab5: Excel日期处理 ------------------------
+# Tab5: Excel日期处理
 with tab5:
     st.subheader("Excel日期处理")
-    uploaded_file2 = st.file_uploader("上传 Excel 文件", type=["xlsx"], key="date_file")
-    year_input = st.number_input("默认年份", value=datetime.now().year)
-    if uploaded_file2:
-        df_date = pd.read_excel(uploaded_file2)
-        for col in df_date.columns:
-            df_date[[f"{col}_原", f"{col}_开始", f"{col}_结束"]] = df_date[col].apply(lambda x: pd.Series(process_date_range(x, year_input)))
-        st.dataframe(df_date.head(10))
-        output2 = BytesIO()
-        df_date.to_excel(output2, index=False)
-        output2.seek(0)
-        st.download_button("下载处理结果", data=output2, file_name="日期处理结果.xlsx")
+    uploaded_excel2 = st.file_uploader("上传Excel文件", type=["xlsx"], key="date_excel")
+    year_input = st.number_input("年份（用于补全）", value=datetime.now().year)
+    date_col = st.text_input("日期列名", value="日期")
+    if uploaded_excel2 and st.button("处理日期", key="date_btn"):
+        df = pd.read_excel(uploaded_excel2)
+        start_times, end_times, originals = [], [], []
+        for d in progress_iter(list(df[date_col]), text="日期处理中"):
+            orig, start, end = process_date_range(d, year_input)
+            originals.append(orig)
+            start_times.append(start)
+            end_times.append(end)
+        df_result = df.copy()
+        insert_at = df_result.columns.get_loc(date_col) + 1
+        df_result.insert(insert_at, '开始时间', start_times)
+        df_result.insert(insert_at + 1, '结束时间', end_times)
+        output = BytesIO()
+        df_result.to_excel(output, index=False)
+        output.seek(0)
+        st.download_button("下载日期处理结果Excel", data=output.getvalue(), file_name="日期处理结果.xlsx")
+
+# Tab6: 运行日志
+with tab6:
+    st.subheader("运行日志（最新）")
+    for line in st.session_state.recent_logs[-200:]:
+        st.text(line)
+
+st.caption("说明：裁剪结果和OCR重命名保存到桌面 crop_results 文件夹，下载网页图片默认保存到桌面 downloaded_images 文件夹")
