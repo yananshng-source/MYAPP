@@ -15,7 +15,8 @@ from typing import Iterable, Any
 import numpy as np
 import subprocess
 import sys
-
+import tempfile
+import zipfile
 # ------------------------ Config ------------------------
 st.set_page_config(page_title="综合处理工具箱", layout="wide")
 DEFAULT_TIMEOUT = 15
@@ -106,6 +107,15 @@ def ensure_dir(path):
     os.makedirs(path, exist_ok=True)
     return path
 
+def create_zip_download(files, zip_name="downloaded_images.zip"):
+    """创建ZIP文件供下载"""
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for file_path in files:
+            if os.path.exists(file_path):
+                zip_file.write(file_path, os.path.basename(file_path))
+    zip_buffer.seek(0)
+    return zip_buffer
 
 # ------------------------ 招生数据处理函数 ------------------------
 def process_admission_data(df_source):
@@ -321,21 +331,35 @@ def download_images_from_urls(url_list, output_dir=None):
     从每个页面抓取 <img> 并下载。
     返回 (output_dir, downloaded_file_paths, errors)
     """
+    # 在云环境中使用临时目录
     if output_dir is None:
-        output_dir = os.path.join(os.path.expanduser("~"), "Desktop", "downloaded_images")
+        # 尝试创建桌面目录，如果失败则使用临时目录
+        try:
+            desktop_path = os.path.join(os.path.expanduser("~"), "Desktop", "downloaded_images")
+            ensure_dir(desktop_path)
+            # 测试写入权限
+            test_file = os.path.join(desktop_path, "test_write.txt")
+            with open(test_file, 'w') as f:
+                f.write("test")
+            os.remove(test_file)
+            output_dir = desktop_path
+        except (PermissionError, OSError):
+            # 如果没有桌面写入权限，使用临时目录
+            output_dir = os.path.join(tempfile.gettempdir(), "downloaded_images")
+            ensure_dir(output_dir)
 
-    ensure_dir(output_dir)
+    log(f"📁 图片下载目录: {output_dir}")
+
     session = requests.Session()
     session.headers.update(REQUEST_HEADERS)
     downloaded_files = []
     errors = []
 
-    log(f"📁 图片下载目录: {output_dir}")
-
     enumerated = list(enumerate(url_list, start=1))
     for idx, url in progress_iter(enumerated, text="下载网页图片中"):
         try:
             _, page_url = (idx, url)
+            log(f"正在访问: {page_url}")
             resp = safe_requests_get(session, page_url)
             soup = BeautifulSoup(resp.content, "html.parser")
             title_tag = soup.find("title")
@@ -343,11 +367,11 @@ def download_images_from_urls(url_list, output_dir=None):
             safe_title = "".join([c if c not in r'\/:*?"<>|' else "_" for c in title])
 
             imgs = soup.find_all("img")
+            log(f"📄 {page_url} - 找到 {len(imgs)} 张图片")
+
             if not imgs:
                 log(f"{page_url} - 未找到 img 标签", level="info")
                 continue
-
-            log(f"📄 {page_url} - 找到 {len(imgs)} 张图片")
 
             for i, img_tag in enumerate(imgs, start=1):
                 src = img_tag.get("src") or img_tag.get("data-src") or img_tag.get("data-original")
@@ -355,13 +379,14 @@ def download_images_from_urls(url_list, output_dir=None):
                     continue
 
                 full_url = urljoin(page_url, src.strip())
+                log(f"正在下载图片: {full_url}")
+
                 try:
                     resp_img = safe_requests_get(session, full_url)
 
-                    # 更好的文件扩展名处理
-                    ext = os.path.splitext(full_url.split('?')[0])[1]  # 去掉URL参数
+                    # 文件扩展名处理
+                    ext = os.path.splitext(full_url.split('?')[0])[1]
                     if not ext or len(ext) > 6:
-                        # 根据Content-Type确定扩展名
                         content_type = resp_img.headers.get('content-type', '')
                         if 'jpeg' in content_type or 'jpg' in content_type:
                             ext = ".jpg"
@@ -370,7 +395,7 @@ def download_images_from_urls(url_list, output_dir=None):
                         elif 'gif' in content_type:
                             ext = ".gif"
                         else:
-                            ext = ".jpg"  # 默认
+                            ext = ".jpg"
 
                     fname = f"{safe_title}_{i:02d}{ext}"
                     fpath = os.path.join(output_dir, fname)
@@ -387,7 +412,7 @@ def download_images_from_urls(url_list, output_dir=None):
                         f.write(resp_img.content)
 
                     downloaded_files.append(fpath)
-                    log(f"✅ 下载成功: {os.path.basename(fpath)}")
+                    log(f"✅ 下载成功: {os.path.basename(fpath)} - 大小: {len(resp_img.content)} bytes")
 
                 except Exception as e:
                     error_msg = f"图片下载失败: {full_url} -> {repr(e)}"
@@ -569,11 +594,10 @@ with tab1:
 with tab2:
     st.subheader("网页图片下载")
     urls_text2 = st.text_area("输入网页URL列表（每行一个）", height=160, key="img_urls")
-    outdir_input = st.text_input("输出文件夹（可选，留空则保存到桌面默认文件夹）", value="", key="img_outdir")
 
-    # 添加默认路径显示
-    default_dir = os.path.join(os.path.expanduser("~"), "Desktop", "downloaded_images")
-    st.info(f"默认下载路径: `{default_dir}`")
+    # 显示当前工作目录信息
+    st.info(f"当前工作目录: `{os.getcwd()}`")
+    st.info(f"临时文件目录: `{tempfile.gettempdir()}`")
 
     col1, col2 = st.columns([1, 3])
     with col1:
@@ -582,46 +606,53 @@ with tab2:
             if not url_list:
                 st.warning("请先输入有效URL列表")
             else:
-                target_dir = outdir_input.strip() or None
                 try:
-                    output_dir, files, errors = download_images_from_urls(url_list, target_dir)
+                    output_dir, files, errors = download_images_from_urls(url_list)
 
-                    # 显示详细的下载结果
+                    # 显示下载结果
                     st.success(f"✅ 完成！共下载 {len(files)} 张图片")
                     st.success(f"📁 保存到: `{output_dir}`")
 
                     # 显示文件列表
                     if files:
                         st.subheader("📄 下载的文件列表:")
+
+                        # 创建ZIP下载
+                        zip_buffer = create_zip_download(files)
+                        st.download_button(
+                            label="📦 下载所有图片(ZIP)",
+                            data=zip_buffer.getvalue(),
+                            file_name="downloaded_images.zip",
+                            mime="application/zip"
+                        )
+
+                        # 显示文件详情和预览
                         for i, file_path in enumerate(files, 1):
                             file_name = os.path.basename(file_path)
                             file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-                            st.write(f"{i}. **{file_name}** ({file_size} bytes)")
 
-                            # 显示图片预览
+                            col1, col2 = st.columns([3, 1])
+                            with col1:
+                                st.write(f"{i}. **{file_name}** ({file_size} bytes)")
+                            with col2:
+                                # 单个文件下载
+                                with open(file_path, 'rb') as f:
+                                    st.download_button(
+                                        f"下载{i}",
+                                        f.read(),
+                                        file_name=file_name,
+                                        key=f"single_{i}"
+                                    )
+
+                            # 图片预览
                             try:
-                                st.image(file_path, caption=file_name, width=200)
+                                st.image(file_path, caption=file_name, width=300)
                             except Exception as e:
                                 st.write(f"预览失败: {e}")
 
-                    # 添加一键打开文件夹功能
-                    if st.button("📂 打开下载文件夹"):
-                        try:
-                            if os.name == 'nt':  # Windows
-                                os.startfile(output_dir)
-                            elif os.name == 'posix':  # macOS, Linux
-                                if sys.platform == "darwin":
-                                    subprocess.run(["open", output_dir])
-                                else:
-                                    subprocess.run(["xdg-open", output_dir])
-                            st.success("已尝试打开文件夹")
-                        except Exception as e:
-                            st.warning(f"无法自动打开文件夹: {e}")
-                            st.code(f"请手动打开: {output_dir}")
-
                     if errors:
                         st.warning(f"有 {len(errors)} 个错误:")
-                        for error in errors[-5:]:  # 只显示最后5个错误
+                        for error in errors[-5:]:
                             st.error(error)
 
                 except Exception as e:
