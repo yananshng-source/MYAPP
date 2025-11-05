@@ -525,44 +525,51 @@ with tab1:
                     log(f"抓取表格总流程失败: {e}", level="error")
                     st.error("抓取表格出错，详情见日志")
 
-# ------------------------ Tab 2: 网页图片下载 ------------------------
-with tab2:
-    st.subheader("网页图片下载")
-    urls_text2 = st.text_area("输入网页URL列表（每行一个）", height=160, key="img_urls")
-    outdir_input = st.text_input("输出文件夹（可选，留空则保存到桌面默认文件夹）", value="", key="img_outdir")
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        if st.button("下载图片", key="img_download"):
-            if st.button("开始下载图片"):
-                if not base_url or not image_urls or not save_dir:
-                    st.error("请填写完整信息")
-                else:
-                    success_count, fail_count = download_images(
-                        base_url,
-                        image_urls,
-                        save_dir,
-                        callback=lambda msg, level="info": st.write(msg)
-                    )
+# =================== Tab2：图片下载 ===================
+with tabs[1]:
+    st.header("📥 批量下载网络图片")
 
-                    st.success(f"完成！成功 {success_count} 张，失败 {fail_count} 张")
+    base_url = st.text_input("基础 URL（可选）：如果全部图片URL是完整的可留空")
+    image_urls_text = st.text_area("输入图片URL（每行一个）")
 
-                    # NEW PATCH ------ 自动打包ZIP + download按钮
-                    import zipfile, io, os
+    save_dir = st.text_input("保存路径（默认：downloaded_images）", "downloaded_images")
 
-                    mem = io.BytesIO()
-                    with zipfile.ZipFile(mem, 'w', zipfile.ZIP_DEFLATED) as zf:
-                        for f in os.listdir(save_dir):
-                            full = os.path.join(save_dir, f)
-                            if os.path.isfile(full):
-                                zf.write(full, arcname=f)
-                    mem.seek(0)
+    # 确保目录
+    if save_dir and not os.path.exists(save_dir):
+        os.makedirs(save_dir, exist_ok=True)
 
-                    st.download_button(
-                        label="下载全部图片（zip）",
-                        data=mem,
-                        file_name="downloaded_images.zip",
-                        mime="application/zip"
-                    )
+    if st.button("开始下载图片"):
+        image_urls = [u.strip() for u in image_urls_text.split("\n") if u.strip()]
+        if not image_urls:
+            st.error("请输入至少一个图片URL")
+        else:
+            success_count, fail_count = download_images(
+                base_url,
+                image_urls,
+                save_dir,
+                callback=lambda msg, level="info": st.write(msg)
+            )
+
+            st.success(f"完成！成功 {success_count} 张，失败 {fail_count} 张")
+
+            # ---- 统一打包 ZIP 并提供浏览器直接下载 ----
+            import zipfile, io
+
+            mem = io.BytesIO()
+            with zipfile.ZipFile(mem, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for f in os.listdir(save_dir):
+                    full = os.path.join(save_dir, f)
+                    if os.path.isfile(full):
+                        zf.write(full, arcname=f)
+            mem.seek(0)
+
+            st.download_button(
+                label="下载全部图片（zip）",
+                data=mem,
+                file_name="downloaded_images.zip",
+                mime="application/zip"
+            )
+
 
 # ------------------------ Tab 3: 图片裁剪 ------------------------
 with tab3:
