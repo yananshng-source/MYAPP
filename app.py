@@ -134,16 +134,23 @@ def process_admission_data(df_source):
 
     df_source['首选科目'] = df_source.apply(determine_preferred_subject, axis=1)
 
-    # 确定招生类别（科类）
+    # 确定招生类别（科类）- 修正逻辑
     def determine_admission_category(row):
         col_type = str(row.get('科类', ''))
-        if '历史类' in col_type or '文科' in col_type:
+        # 新高考省份：历史类、物理类
+        if '历史类' in col_type:
+            return '历史类'
+        elif '物理类' in col_type:
+            return '物理类'
+        # 传统高考省份：文科、理科
+        elif '文科' in col_type:
             return '文科'
-        elif '物理类' in col_type or '理科' in col_type:
+        elif '理科' in col_type:
             return '理科'
         elif '综合' in col_type:
             return '综合'
-        return '综合'
+        # 其他情况保持原样
+        return col_type
 
     df_source['招生类别'] = df_source.apply(determine_admission_category, axis=1)
 
