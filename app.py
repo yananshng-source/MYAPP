@@ -13,8 +13,9 @@ import logging
 import traceback
 from typing import Iterable, Any
 import numpy as np
-import tkinter as tk
-from tkinter import filedialog
+import subprocess
+import sys
+
 # ------------------------ Config ------------------------
 st.set_page_config(page_title="综合处理工具箱", layout="wide")
 DEFAULT_TIMEOUT = 15
@@ -318,15 +319,18 @@ def scrape_table(url_list, group_cols):
 def download_images_from_urls(url_list, output_dir=None):
     """
     从每个页面抓取 <img> 并下载。
-    返回 (output_dir, downloaded_file_paths)
+    返回 (output_dir, downloaded_file_paths, errors)
     """
     if output_dir is None:
         output_dir = os.path.join(os.path.expanduser("~"), "Desktop", "downloaded_images")
+
     ensure_dir(output_dir)
     session = requests.Session()
     session.headers.update(REQUEST_HEADERS)
     downloaded_files = []
     errors = []
+
+    log(f"📁 图片下载目录: {output_dir}")
 
     enumerated = list(enumerate(url_list, start=1))
     for idx, url in progress_iter(enumerated, text="下载网页图片中"):
@@ -337,32 +341,67 @@ def download_images_from_urls(url_list, output_dir=None):
             title_tag = soup.find("title")
             title = title_tag.string.strip() if title_tag and title_tag.string else f"网页{idx}"
             safe_title = "".join([c if c not in r'\/:*?"<>|' else "_" for c in title])
+
             imgs = soup.find_all("img")
             if not imgs:
                 log(f"{page_url} - 未找到 img 标签", level="info")
+                continue
+
+            log(f"📄 {page_url} - 找到 {len(imgs)} 张图片")
+
             for i, img_tag in enumerate(imgs, start=1):
                 src = img_tag.get("src") or img_tag.get("data-src") or img_tag.get("data-original")
                 if not src:
                     continue
+
                 full_url = urljoin(page_url, src.strip())
                 try:
                     resp_img = safe_requests_get(session, full_url)
-                    ext = os.path.splitext(full_url)[1]
+
+                    # 更好的文件扩展名处理
+                    ext = os.path.splitext(full_url.split('?')[0])[1]  # 去掉URL参数
                     if not ext or len(ext) > 6:
-                        ext = ".jpg"
-                    fname = f"{safe_title}_{i}{ext}"
+                        # 根据Content-Type确定扩展名
+                        content_type = resp_img.headers.get('content-type', '')
+                        if 'jpeg' in content_type or 'jpg' in content_type:
+                            ext = ".jpg"
+                        elif 'png' in content_type:
+                            ext = ".png"
+                        elif 'gif' in content_type:
+                            ext = ".gif"
+                        else:
+                            ext = ".jpg"  # 默认
+
+                    fname = f"{safe_title}_{i:02d}{ext}"
                     fpath = os.path.join(output_dir, fname)
+
+                    # 避免文件名重复
+                    counter = 1
+                    original_fpath = fpath
+                    while os.path.exists(fpath):
+                        name_only = os.path.splitext(original_fpath)[0]
+                        fpath = f"{name_only}_{counter}{ext}"
+                        counter += 1
+
                     with open(fpath, "wb") as f:
                         f.write(resp_img.content)
+
                     downloaded_files.append(fpath)
+                    log(f"✅ 下载成功: {os.path.basename(fpath)}")
+
                 except Exception as e:
-                    errors.append(f"图片下载失败: {full_url} -> {repr(e)}")
-                    log(f"图片下载失败: {full_url} -> {e}", level="warning")
+                    error_msg = f"图片下载失败: {full_url} -> {repr(e)}"
+                    errors.append(error_msg)
+                    log(error_msg, level="warning")
                     continue
+
         except Exception as e:
-            log(f"页面请求失败: {url} -> {e}", level="warning")
-            errors.append(f"{url} -> {repr(e)}")
+            error_msg = f"页面请求失败: {url} -> {repr(e)}"
+            log(error_msg, level="warning")
+            errors.append(error_msg)
             continue
+
+    log(f"🎉 下载完成! 总共下载 {len(downloaded_files)} 张图片到 {output_dir}")
     return output_dir, downloaded_files, errors
 
 
@@ -527,28 +566,14 @@ with tab1:
                     st.error("抓取表格出错，详情见日志")
 
 # ------------------------ Tab 2: 网页图片下载 ------------------------
-
-
 with tab2:
     st.subheader("网页图片下载")
     urls_text2 = st.text_area("输入网页URL列表（每行一个）", height=160, key="img_urls")
+    outdir_input = st.text_input("输出文件夹（可选，留空则保存到桌面默认文件夹）", value="", key="img_outdir")
 
-    col_dir, col_btn = st.columns([3,1])
-    with col_dir:
-        outdir_input = st.text_input("输出文件夹（可选，留空则保存到桌面默认文件夹）", value="", key="img_outdir")
-    with col_btn:
-        if st.button("选择文件夹"):
-            try:
-                # 仅在本地运行有效，云端不支持弹窗
-                root = tk.Tk()
-                root.withdraw()
-                folder_selected = filedialog.askdirectory()
-                if folder_selected:
-                    outdir_input = folder_selected
-                    st.session_state["img_outdir"] = outdir_input
-                    st.success(f"已选择文件夹: {outdir_input}")
-            except Exception as e:
-                st.warning(f"选择文件夹失败: {e}")
+    # 添加默认路径显示
+    default_dir = os.path.join(os.path.expanduser("~"), "Desktop", "downloaded_images")
+    st.info(f"默认下载路径: `{default_dir}`")
 
     col1, col2 = st.columns([1, 3])
     with col1:
@@ -557,36 +582,51 @@ with tab2:
             if not url_list:
                 st.warning("请先输入有效URL列表")
             else:
-                # 如果用户没有输入或路径不存在，使用桌面默认文件夹并确保创建
-                if not outdir_input.strip():
-                    target_dir = os.path.join(os.path.expanduser("~"), "Desktop", "downloaded_images")
-                else:
-                    target_dir = os.path.abspath(outdir_input.strip())
-
+                target_dir = outdir_input.strip() or None
                 try:
-                    # 确保文件夹存在
-                    os.makedirs(target_dir, exist_ok=True)
-
-                    # 下载图片
                     output_dir, files, errors = download_images_from_urls(url_list, target_dir)
-                    st.success(f"完成！共下载 {len(files)} 张图片，保存到: {output_dir}")
 
+                    # 显示详细的下载结果
+                    st.success(f"✅ 完成！共下载 {len(files)} 张图片")
+                    st.success(f"📁 保存到: `{output_dir}`")
+
+                    # 显示文件列表
                     if files:
-                        # 显示前8张缩略图
-                        preview = files[:8]
-                        cols = st.columns(len(preview))
-                        for c, fp in zip(cols, preview):
+                        st.subheader("📄 下载的文件列表:")
+                        for i, file_path in enumerate(files, 1):
+                            file_name = os.path.basename(file_path)
+                            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+                            st.write(f"{i}. **{file_name}** ({file_size} bytes)")
+
+                            # 显示图片预览
                             try:
-                                c.image(fp, caption=os.path.basename(fp), use_column_width=True)
-                            except Exception:
-                                c.write(os.path.basename(fp))
+                                st.image(file_path, caption=file_name, width=200)
+                            except Exception as e:
+                                st.write(f"预览失败: {e}")
+
+                    # 添加一键打开文件夹功能
+                    if st.button("📂 打开下载文件夹"):
+                        try:
+                            if os.name == 'nt':  # Windows
+                                os.startfile(output_dir)
+                            elif os.name == 'posix':  # macOS, Linux
+                                if sys.platform == "darwin":
+                                    subprocess.run(["open", output_dir])
+                                else:
+                                    subprocess.run(["xdg-open", output_dir])
+                            st.success("已尝试打开文件夹")
+                        except Exception as e:
+                            st.warning(f"无法自动打开文件夹: {e}")
+                            st.code(f"请手动打开: {output_dir}")
 
                     if errors:
-                        st.warning(f"有 {len(errors)} 个错误（见日志）")
+                        st.warning(f"有 {len(errors)} 个错误:")
+                        for error in errors[-5:]:  # 只显示最后5个错误
+                            st.error(error)
+
                 except Exception as e:
                     log(f"下载图片失败: {e}\n{traceback.format_exc()}", level="error")
-                    st.error(f"下载图片出错，详情见日志。目标路径: {target_dir}")
-
+                    st.error(f"下载图片出错: {e}")
 
 # ------------------------ Tab 3: 图片裁剪 ------------------------
 with tab3:
@@ -783,4 +823,4 @@ with tab6:
 
 # ------------------------ Footer ------------------------
 st.markdown("---")
-st.caption("说明：已默认启用统一请求配置（超时与证书策略）。若需将 VERIFY_SSL 设为 True，请修改文件顶部的常量并重启。") 
+st.caption("说明：已默认启用统一请求配置（超时与证书策略）。若需将 VERIFY_SSL 设为 True，请修改文件顶部的常量并重启。")
