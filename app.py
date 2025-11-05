@@ -533,28 +533,36 @@ with tab2:
     col1, col2 = st.columns([1, 3])
     with col1:
         if st.button("下载图片", key="img_download"):
-            url_list = [u.strip() for u in urls_text2.splitlines() if u.strip()]
-            if not url_list:
-                st.warning("请先输入有效URL列表")
-            else:
-                target_dir = outdir_input.strip() or None
-                try:
-                    output_dir, files, errors = download_images_from_urls(url_list, target_dir)
-                    st.success(f"完成！共下载 {len(files)} 张图片，保存到: {output_dir}")
-                    if files:
-                        # show first few thumbnails (lazy)
-                        preview = files[:8]
-                        cols = st.columns(len(preview))
-                        for c, fp in zip(cols, preview):
-                            try:
-                                c.image(fp, caption=os.path.basename(fp), use_column_width=True)
-                            except Exception:
-                                c.write(os.path.basename(fp))
-                    if errors:
-                        st.warning(f"有 {len(errors)} 个错误（见日志）")
-                except Exception as e:
-                    log(f"下载图片失败: {e}\n{traceback.format_exc()}", level="error")
-                    st.error("下载图片出错，详情见日志")
+            if st.button("开始下载图片"):
+                if not base_url or not image_urls or not save_dir:
+                    st.error("请填写完整信息")
+                else:
+                    success_count, fail_count = download_images(
+                        base_url,
+                        image_urls,
+                        save_dir,
+                        callback=lambda msg, level="info": st.write(msg)
+                    )
+
+                    st.success(f"完成！成功 {success_count} 张，失败 {fail_count} 张")
+
+                    # NEW PATCH ------ 自动打包ZIP + download按钮
+                    import zipfile, io, os
+
+                    mem = io.BytesIO()
+                    with zipfile.ZipFile(mem, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        for f in os.listdir(save_dir):
+                            full = os.path.join(save_dir, f)
+                            if os.path.isfile(full):
+                                zf.write(full, arcname=f)
+                    mem.seek(0)
+
+                    st.download_button(
+                        label="下载全部图片（zip）",
+                        data=mem,
+                        file_name="downloaded_images.zip",
+                        mime="application/zip"
+                    )
 
 # ------------------------ Tab 3: 图片裁剪 ------------------------
 with tab3:
