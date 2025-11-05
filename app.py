@@ -12,6 +12,7 @@ from datetime import datetime
 import logging
 import traceback
 from typing import Iterable, Any
+import numpy as np
 
 # ------------------------ Config ------------------------
 st.set_page_config(page_title="综合处理工具箱", layout="wide")
@@ -32,6 +33,7 @@ if not logger.handlers:
 if "recent_logs" not in st.session_state:
     st.session_state.recent_logs = []
 
+
 def log(msg, level="info"):
     entry = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {level.upper()} - {msg}"
     st.session_state.recent_logs.append(entry)
@@ -46,6 +48,7 @@ def log(msg, level="info"):
         logger.error(msg)
     else:
         logger.debug(msg)
+
 
 # ------------------------ Helpers ------------------------
 def progress_iter(it: Iterable[Any], text="处理中...", progress_key=None):
@@ -82,6 +85,7 @@ def progress_iter(it: Iterable[Any], text="处理中...", progress_key=None):
         if progress_key in st.session_state:
             del st.session_state[progress_key]
 
+
 def safe_requests_get(session: requests.Session, url: str, **kwargs):
     """
     Wrapper around session.get with global headers, timeout, verify options and robust exception handling.
@@ -95,9 +99,159 @@ def safe_requests_get(session: requests.Session, url: str, **kwargs):
     except Exception as e:
         raise
 
+
 def ensure_dir(path):
     os.makedirs(path, exist_ok=True)
     return path
+
+
+# ------------------------ 招生数据处理函数 ------------------------
+def process_admission_data(df_source):
+    """
+    处理招生数据，按照指定规则分组并生成结果表格
+    """
+    log("开始处理招生数据...")
+
+    # 数据清洗和预处理 - 只替换特殊字符，不填充空值
+    df_source = df_source.replace({'^': '', '~': ''}, regex=True)
+
+    # 处理数值字段，但不填充空值
+    numeric_columns = ['最高分', '最低分', '最低分位次', '录取人数']
+    for col in numeric_columns:
+        if col in df_source.columns:
+            df_source[col] = pd.to_numeric(df_source[col], errors='coerce')
+
+    # 确定首选科目 - 只针对新高考省份
+    def determine_preferred_subject(row):
+        col_type = str(row.get('科类', ''))
+        # 只有历史类和物理类才有首选科目
+        if '历史类' in col_type:
+            return '历史'
+        elif '物理类' in col_type:
+            return '物理'
+        # 文科、理科、综合等传统科类没有首选科目
+        return ''
+
+    df_source['首选科目'] = df_source.apply(determine_preferred_subject, axis=1)
+
+    # 确定招生类别（科类）
+    def determine_admission_category(row):
+        col_type = str(row.get('科类', ''))
+        if '历史类' in col_type or '文科' in col_type:
+            return '文科'
+        elif '物理类' in col_type or '理科' in col_type:
+            return '理科'
+        elif '综合' in col_type:
+            return '综合'
+        return '综合'
+
+    df_source['招生类别'] = df_source.apply(determine_admission_category, axis=1)
+
+    # 处理层次字段 - 确保不为空
+    df_source['层次'] = df_source.get('层次', '本科(普通)')
+    df_source['层次'] = df_source['层次'].fillna('本科(普通)')
+
+    # 处理招生类型 - 确保不为空
+    df_source['招生类型'] = df_source.get('招生类型', '')
+    df_source['招生类型'] = df_source['招生类型'].fillna('')
+
+    # 处理专业组代码 - 确保不为空
+    df_source['专业组代码'] = df_source.get('专业组代码', '')
+    df_source['专业组代码'] = df_source['专业组代码'].fillna('')
+
+    # 处理其他分组列 - 确保不为空
+    df_source['省份'] = df_source['省份'].fillna('')
+    df_source['批次'] = df_source['批次'].fillna('')
+
+    log("数据预处理完成，开始分组...")
+
+    # 分组处理 - 按照指定的列分组
+    grouping_columns = ['省份', '招生类别', '批次', '层次', '招生类型', '专业组代码']
+
+    log(f"使用以下列进行分组: {grouping_columns}")
+
+    # 创建一个列表来存储结果
+    results = []
+
+    # 对每个分组进行处理
+    group_count = 0
+    for group_key, group_data in df_source.groupby(grouping_columns):
+        group_count += 1
+        # 解包分组键
+        省份, 招生类别, 批次, 层次, 招生类型, 专业组代码 = group_key
+
+        # 计算组内聚合值
+        最高分 = group_data['最高分'].max() if '最高分' in group_data.columns and not group_data[
+            '最高分'].isna().all() else pd.NA
+        最低分 = group_data['最低分'].min() if '最低分' in group_data.columns and not group_data[
+            '最低分'].isna().all() else pd.NA
+
+        # 找到最低分对应的记录
+        最低分位次 = pd.NA
+        最低分专业组代码 = 专业组代码
+        数据来源 = ''
+        首选科目 = ''
+        学校名称 = ''
+
+        if pd.notna(最低分) and '最低分' in group_data.columns:
+            min_score_rows = group_data[group_data['最低分'] == 最低分]
+            if not min_score_rows.empty:
+                min_score_row = min_score_rows.iloc[0]
+                最低分位次 = min_score_row.get('最低分位次', pd.NA)
+                最低分专业组代码 = min_score_row.get('专业组代码', 专业组代码)
+                数据来源 = min_score_row.get('数据来源', '')
+                首选科目 = min_score_row.get('首选科目', '')  # 使用记录中的首选科目
+                学校名称 = min_score_row.get('学校', '')
+
+        # 如果没找到最低分记录，使用组内第一条记录
+        if not 学校名称 and len(group_data) > 0:
+            first_row = group_data.iloc[0]
+            数据来源 = first_row.get('数据来源', '')
+            首选科目 = first_row.get('首选科目', '')  # 使用记录中的首选科目
+            学校名称 = first_row.get('学校', '')
+
+        # 计算录取人数总和（源数据中有录取人数）
+        录取人数 = group_data['录取人数'].sum() if '录取人数' in group_data.columns and not group_data[
+            '录取人数'].isna().all() else pd.NA
+
+        # 招生人数置空（源数据中没有）
+        招生人数 = pd.NA
+
+        # 添加到结果列表
+        results.append({
+            '学校名称': 学校名称,
+            '省份': 省份,
+            '招生类别': 招生类别,
+            '招生批次': 批次,
+            '招生类型': 招生类型,
+            '最高分': 最高分,
+            '最低分': 最低分,
+            '最低分位次': 最低分位次,
+            '录取人数': 录取人数,
+            '招生人数': 招生人数,  # 置空
+            '数据来源': 数据来源,
+            '专业组代码': 最低分专业组代码,  # 使用最低分对应的专业组代码
+            '首选科目': 首选科目,  # 只有历史类/物理类才有值，其他为空
+            '院校招生代码': ''  # 保持空值
+        })
+
+    log(f"分组处理完成，共 {group_count} 个分组")
+
+    # 创建结果DataFrame
+    result_df = pd.DataFrame(results)
+
+    log(f"分组后共有 {len(result_df)} 组数据")
+
+    # 确保数值字段保持正确的数据类型
+    numeric_columns = ['最高分', '最低分', '最低分位次', '录取人数']
+    for col in numeric_columns:
+        if col in result_df.columns:
+            result_df[col] = pd.to_numeric(result_df[col], errors='coerce')
+
+    log(f"处理完成，共生成 {len(result_df)} 行记录")
+
+    return result_df
+
 
 # ------------------------ Core functions ------------------------
 def scrape_table(url_list, group_cols):
@@ -152,6 +306,7 @@ def scrape_table(url_list, group_cols):
         log("未抓取到任何表格。", level="warning")
         return None
 
+
 def download_images_from_urls(url_list, output_dir=None):
     """
     从每个页面抓取 <img> 并下载。
@@ -202,6 +357,7 @@ def download_images_from_urls(url_list, output_dir=None):
             continue
     return output_dir, downloaded_files, errors
 
+
 def crop_images_only(folder_path, x_center, y_center, crop_width, crop_height):
     output_folder = os.path.join(os.path.expanduser("~"), "Desktop", "crop_results")
     ensure_dir(output_folder)
@@ -227,6 +383,7 @@ def crop_images_only(folder_path, x_center, y_center, crop_width, crop_height):
             log(f"裁剪失败: {filename} -> {e}", level="warning")
             continue
     return output_folder
+
 
 # ------------------------ 选科转换与日期处理 helpers ------------------------
 def convert_selection_requirements(df):
@@ -271,6 +428,7 @@ def convert_selection_requirements(df):
             continue
     return df_new
 
+
 def safe_parse_datetime(datetime_str, year):
     if pd.isna(datetime_str):
         return None
@@ -288,6 +446,7 @@ def safe_parse_datetime(datetime_str, year):
         except Exception:
             continue
     return None
+
 
 def process_date_range(date_str, year):
     if pd.isna(date_str):
@@ -318,14 +477,16 @@ def process_date_range(date_str, year):
         end_dt = dt.replace(hour=23, minute=59, second=59) if ':' not in date_str else dt
         return date_str, start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')
 
+
 # ------------------------ Streamlit UI ------------------------
 st.title("🧰 综合处理工具箱 - 完整版（带进度条 & 日志）")
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "网页表格抓取",
     "网页图片下载",
     "图片裁剪",
     "高校选科转换",
-    "Excel日期处理"
+    "Excel日期处理",
+    "招生数据处理"
 ])
 
 # side: logs
@@ -469,6 +630,117 @@ with tab5:
         except Exception as e:
             log(f"读取上传文件失败: {e}", level="error")
             st.error("无法读取上传的 Excel 文件")
+
+# ------------------------ Tab 6: 招生数据处理 ------------------------
+with tab6:
+    st.subheader("🎓 招生数据处理")
+    st.markdown("""
+    本工具按照以下规则处理招生数据：
+    - **分组规则**：省份、科类、批次、层次、招生类型、专业组代码
+    - **聚合规则**：
+      - 最高分 = 组内最高分的最大值
+      - 最低分 = 组内最低分的最小值  
+      - 最低分位次 = 最低分对应的位次
+      - 录取人数 = 组内录取人数总和
+      - 招生人数 = 空值（源数据中没有）
+      - 专业组代码 = 最低分对应的专业组代码
+      - 首选科目 = 只有历史类/物理类才有值，其他为空
+    """)
+
+    # 文件上传
+    uploaded_file_admission = st.file_uploader(
+        "上传招生数据Excel文件",
+        type=['xlsx'],
+        help="请上传包含招生数据的Excel文件",
+        key="admission_excel"
+    )
+
+    if uploaded_file_admission is not None:
+        try:
+            # 读取上传的文件
+            df_source = pd.read_excel(uploaded_file_admission)
+
+            # 显示源数据预览
+            st.subheader("📊 源数据预览")
+            st.dataframe(df_source.head(10), use_container_width=True)
+            st.write(f"源数据形状: {df_source.shape}")
+
+            # 处理按钮
+            if st.button("🚀 开始处理招生数据", type="primary", key="admission_btn"):
+                with st.spinner("正在处理招生数据，请稍候..."):
+                    result_df = process_admission_data(df_source)
+
+                if len(result_df) == 0:
+                    st.error("警告：没有生成任何数据，请检查源数据文件")
+                    return
+
+                # 显示处理结果
+                st.subheader("✅ 处理结果")
+
+                # 显示统计信息
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("学校数量", result_df['学校名称'].nunique())
+                with col2:
+                    st.metric("省份数量", result_df['省份'].nunique())
+                with col3:
+                    st.metric("总记录数", len(result_df))
+                with col4:
+                    total_enrollment = result_df['录取人数'].sum() if '录取人数' in result_df.columns and not result_df[
+                        '录取人数'].isna().all() else 0
+                    st.metric("总录取人数", int(total_enrollment))
+
+                # 显示数据预览
+                st.dataframe(result_df, use_container_width=True)
+
+                # 显示详细统计
+                st.subheader("📈 详细统计")
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.write("**招生类别分布**")
+                    st.write(result_df['招生类别'].value_counts())
+
+                    st.write("**首选科目分布**")
+                    preferred_subject_dist = result_df['首选科目'].value_counts()
+                    if '' in preferred_subject_dist:
+                        preferred_subject_dist['空值'] = preferred_subject_dist.pop('')
+                    st.write(preferred_subject_dist)
+
+                with col2:
+                    if '最高分' in result_df.columns:
+                        valid_max_scores = result_df['最高分'].dropna()
+                        if len(valid_max_scores) > 0:
+                            st.write("**分数范围**")
+                            st.write(f"最高分: {valid_max_scores.min():.1f} - {valid_max_scores.max():.1f}")
+
+                    if '最低分' in result_df.columns:
+                        valid_min_scores = result_df['最低分'].dropna()
+                        if len(valid_min_scores) > 0:
+                            st.write(f"最低分: {valid_min_scores.min():.1f} - {valid_min_scores.max():.1f}")
+
+                # 下载功能
+                st.subheader("📥 下载处理结果")
+
+                # 将DataFrame转换为Excel字节流
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    result_df.to_excel(writer, index=False, sheet_name='处理结果')
+
+                processed_data = output.getvalue()
+
+                st.download_button(
+                    label="📥 下载处理后的Excel文件",
+                    data=processed_data,
+                    file_name="分组处理后的招生数据.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_admission"
+                )
+
+        except Exception as e:
+            st.error(f"处理过程中出现错误: {e}")
+            st.info("请检查上传的文件格式是否正确")
 
 # ------------------------ Footer ------------------------
 st.markdown("---")
