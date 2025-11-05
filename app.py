@@ -13,7 +13,8 @@ import logging
 import traceback
 from typing import Iterable, Any
 import numpy as np
-
+import tkinter as tk
+from tkinter import filedialog
 # ------------------------ Config ------------------------
 st.set_page_config(page_title="综合处理工具箱", layout="wide")
 DEFAULT_TIMEOUT = 15
@@ -525,50 +526,66 @@ with tab1:
                     log(f"抓取表格总流程失败: {e}", level="error")
                     st.error("抓取表格出错，详情见日志")
 
-# =================== Tab2：图片下载 ===================
-with tabs[1]:
-    st.header("📥 批量下载网络图片")
+# ------------------------ Tab 2: 网页图片下载 ------------------------
 
-    base_url = st.text_input("基础 URL（可选）：如果全部图片URL是完整的可留空")
-    image_urls_text = st.text_area("输入图片URL（每行一个）")
 
-    save_dir = st.text_input("保存路径（默认：downloaded_images）", "downloaded_images")
+with tab2:
+    st.subheader("网页图片下载")
+    urls_text2 = st.text_area("输入网页URL列表（每行一个）", height=160, key="img_urls")
 
-    # 确保目录
-    if save_dir and not os.path.exists(save_dir):
-        os.makedirs(save_dir, exist_ok=True)
+    col_dir, col_btn = st.columns([3,1])
+    with col_dir:
+        outdir_input = st.text_input("输出文件夹（可选，留空则保存到桌面默认文件夹）", value="", key="img_outdir")
+    with col_btn:
+        if st.button("选择文件夹"):
+            try:
+                # 仅在本地运行有效，云端不支持弹窗
+                root = tk.Tk()
+                root.withdraw()
+                folder_selected = filedialog.askdirectory()
+                if folder_selected:
+                    outdir_input = folder_selected
+                    st.session_state["img_outdir"] = outdir_input
+                    st.success(f"已选择文件夹: {outdir_input}")
+            except Exception as e:
+                st.warning(f"选择文件夹失败: {e}")
 
-    if st.button("开始下载图片"):
-        image_urls = [u.strip() for u in image_urls_text.split("\n") if u.strip()]
-        if not image_urls:
-            st.error("请输入至少一个图片URL")
-        else:
-            success_count, fail_count = download_images(
-                base_url,
-                image_urls,
-                save_dir,
-                callback=lambda msg, level="info": st.write(msg)
-            )
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        if st.button("下载图片", key="img_download"):
+            url_list = [u.strip() for u in urls_text2.splitlines() if u.strip()]
+            if not url_list:
+                st.warning("请先输入有效URL列表")
+            else:
+                # 如果用户没有输入或路径不存在，使用桌面默认文件夹并确保创建
+                if not outdir_input.strip():
+                    target_dir = os.path.join(os.path.expanduser("~"), "Desktop", "downloaded_images")
+                else:
+                    target_dir = os.path.abspath(outdir_input.strip())
 
-            st.success(f"完成！成功 {success_count} 张，失败 {fail_count} 张")
+                try:
+                    # 确保文件夹存在
+                    os.makedirs(target_dir, exist_ok=True)
 
-            # ---- 统一打包 ZIP 并提供浏览器直接下载 ----
-            import zipfile, io
+                    # 下载图片
+                    output_dir, files, errors = download_images_from_urls(url_list, target_dir)
+                    st.success(f"完成！共下载 {len(files)} 张图片，保存到: {output_dir}")
 
-            mem = io.BytesIO()
-            with zipfile.ZipFile(mem, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for f in os.listdir(save_dir):
-                    full = os.path.join(save_dir, f)
-                    if os.path.isfile(full):
-                        zf.write(full, arcname=f)
-            mem.seek(0)
+                    if files:
+                        # 显示前8张缩略图
+                        preview = files[:8]
+                        cols = st.columns(len(preview))
+                        for c, fp in zip(cols, preview):
+                            try:
+                                c.image(fp, caption=os.path.basename(fp), use_column_width=True)
+                            except Exception:
+                                c.write(os.path.basename(fp))
 
-            st.download_button(
-                label="下载全部图片（zip）",
-                data=mem,
-                file_name="downloaded_images.zip",
-                mime="application/zip"
-            )
+                    if errors:
+                        st.warning(f"有 {len(errors)} 个错误（见日志）")
+                except Exception as e:
+                    log(f"下载图片失败: {e}\n{traceback.format_exc()}", level="error")
+                    st.error(f"下载图片出错，详情见日志。目标路径: {target_dir}")
 
 
 # ------------------------ Tab 3: 图片裁剪 ------------------------
@@ -766,4 +783,4 @@ with tab6:
 
 # ------------------------ Footer ------------------------
 st.markdown("---")
-st.caption("说明：已默认启用统一请求配置（超时与证书策略）。若需将 VERIFY_SSL 设为 True，请修改文件顶部的常量并重启。")
+st.caption("说明：已默认启用统一请求配置（超时与证书策略）。若需将 VERIFY_SSL 设为 True，请修改文件顶部的常量并重启。")  这是我给你的  在这个基础上改 只修改tab2下载成功但 找不到文件夹的事
