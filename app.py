@@ -3,7 +3,8 @@ import streamlit as st
 import os
 import pandas as pd
 from io import BytesIO
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageEnhance
+import pytesseract
 import requests
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
@@ -17,7 +18,7 @@ from typing import Iterable, Any
 st.set_page_config(page_title="综合处理工具箱", layout="wide")
 DEFAULT_TIMEOUT = 15
 REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-VERIFY_SSL = False  # cloud 上有些站点会证书问题，保守设为 False
+VERIFY_SSL = False
 MAX_LOG_LINES = 200
 
 # ------------------------ Logging ------------------------
@@ -28,14 +29,12 @@ if not logger.handlers:
     ch.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     logger.addHandler(ch)
 
-# store recent logs in session state to show in UI
 if "recent_logs" not in st.session_state:
     st.session_state.recent_logs = []
 
 def log(msg, level="info"):
     entry = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {level.upper()} - {msg}"
     st.session_state.recent_logs.append(entry)
-    # cap length
     if len(st.session_state.recent_logs) > MAX_LOG_LINES:
         st.session_state.recent_logs = st.session_state.recent_logs[-MAX_LOG_LINES:]
     if level == "info":
@@ -49,13 +48,6 @@ def log(msg, level="info"):
 
 # ------------------------ Helpers ------------------------
 def progress_iter(it: Iterable[Any], text="处理中...", progress_key=None):
-    """
-    Generic iterator wrapper that updates a single st.progress bar (main bar).
-    It expects an iterable with a determinable length (like list, tuple, DataFrame rows via list()).
-    Yields the original items.
-    """
-    # normalize to list to calculate total reliably (this will hold items in memory)
-    # For very large iterables you may replace with a custom strategy.
     items = list(it)
     total = len(items)
     if progress_key is None:
@@ -71,22 +63,16 @@ def progress_iter(it: Iterable[Any], text="处理中...", progress_key=None):
             try:
                 progress_bar.progress(percent, text=text)
             except Exception:
-                # fallback: ignore progress update error
                 pass
         try:
             progress_bar.progress(100, text=text + " ✅ 完成")
         except Exception:
             pass
     finally:
-        # clear stored progress bar so future calls get a fresh widget
         if progress_key in st.session_state:
             del st.session_state[progress_key]
 
 def safe_requests_get(session: requests.Session, url: str, **kwargs):
-    """
-    Wrapper around session.get with global headers, timeout, verify options and robust exception handling.
-    Returns response or raises.
-    """
     try:
         resp = session.get(url, timeout=kwargs.get("timeout", DEFAULT_TIMEOUT),
                            headers=REQUEST_HEADERS, verify=VERIFY_SSL)
@@ -101,10 +87,6 @@ def ensure_dir(path):
 
 # ------------------------ Core functions ------------------------
 def scrape_table(url_list, group_cols):
-    """
-    Scrape tables from provided URLs using pandas.read_html.
-    Returns BytesIO of an Excel file (multiple sheets) or None if nothing found.
-    """
     session = requests.Session()
     sheet_data = {}
     all_data = []
@@ -122,7 +104,6 @@ def scrape_table(url_list, group_cols):
                 msg = f"read_html 失败: {page_url} -> {e}"
                 log(msg, level="warning")
                 errors.append(msg)
-                # continue to next url; don't drop entire page because maybe other pages ok
                 continue
 
             for i, df in enumerate(dfs):
@@ -153,10 +134,6 @@ def scrape_table(url_list, group_cols):
         return None
 
 def download_images_from_urls(url_list, output_dir=None):
-    """
-    从每个页面抓取 <img> 并下载。
-    返回 (output_dir, downloaded_file_paths)
-    """
     if output_dir is None:
         output_dir = os.path.join(os.path.expanduser("~"), "Desktop", "downloaded_images")
     ensure_dir(output_dir)
@@ -202,33 +179,7 @@ def download_images_from_urls(url_list, output_dir=None):
             continue
     return output_dir, downloaded_files, errors
 
-def crop_images_only(folder_path, x_center, y_center, crop_width, crop_height):
-    output_folder = os.path.join(os.path.expanduser("~"), "Desktop", "crop_results")
-    ensure_dir(output_folder)
-    img_exts = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
-    filenames = [f for f in os.listdir(folder_path) if f.lower().endswith(img_exts)]
-    for filename in progress_iter(filenames, text="裁剪图片中"):
-        try:
-            image_path = os.path.join(folder_path, filename)
-            img = Image.open(image_path).convert("RGB")
-            width, height = img.size
-            left = max(0, int(x_center - crop_width // 2))
-            right = min(width, int(x_center + crop_width // 2))
-            top = max(0, int(y_center - crop_height // 2))
-            bottom = min(height, int(y_center + crop_height // 2))
-            crop_img = img.crop((left, top, right, bottom))
-            # 放大二倍用于后续识别/查看
-            crop_img = crop_img.resize((crop_img.width * 2, crop_img.height * 2), Image.LANCZOS)
-            bw = ImageOps.grayscale(crop_img)
-            save_path = os.path.join(output_folder, f"crop_{filename}")
-            bw.save(save_path)
-            log(f"裁剪并保存: {save_path}")
-        except Exception as e:
-            log(f"裁剪失败: {filename} -> {e}", level="warning")
-            continue
-    return output_folder
-
-# ------------------------ 选科转换与日期处理 helpers ------------------------
+# ------------------------ 高校选科转换 ------------------------
 def convert_selection_requirements(df):
     subject_mapping = {'物理': '物', '化学': '化', '生物': '生', '历史': '历', '地理': '地', '政治': '政',
                        '思想政治': '政'}
@@ -237,8 +188,6 @@ def convert_selection_requirements(df):
     df_new['选科要求类型'] = ''
     df_new['次选'] = ''
 
-    # iterate rows - we selected "row" granular progress behavior
-    total_rows = len(df)
     for idx, row in progress_iter(list(df.iterrows()), text="选科转换中"):
         try:
             i, r = row
@@ -271,6 +220,7 @@ def convert_selection_requirements(df):
             continue
     return df_new
 
+# ------------------------ Excel日期处理 ------------------------
 def safe_parse_datetime(datetime_str, year):
     if pd.isna(datetime_str):
         return None
@@ -291,39 +241,23 @@ def safe_parse_datetime(datetime_str, year):
 
 def process_date_range(date_str, year):
     if pd.isna(date_str):
-        return date_str, "", ""
+        return '', ''
     date_str = str(date_str).strip()
     if '-' in date_str:
-        start_str, end_str = date_str.split('-', 1)
-        start_dt = safe_parse_datetime(start_str, year)
-        end_dt = safe_parse_datetime(end_str, year)
-        if not start_dt or not end_dt:
-            return date_str, "格式错误", "格式错误"
-        if ':' not in start_str:
-            start_dt = start_dt.replace(hour=0, minute=0, second=0)
-        if ':' not in end_str:
-            end_dt = end_dt.replace(hour=23, minute=59, second=59)
-        if end_dt < start_dt:
-            # assume cross-year, 尝试将结束年设到下一年
-            try:
-                end_dt = end_dt.replace(year=start_dt.year + 1)
-            except Exception:
-                pass
-        return date_str, start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')
+        parts = date_str.split('-')
+        start = safe_parse_datetime(parts[0], year)
+        end = safe_parse_datetime(parts[1], year)
+        return start, end
     else:
         dt = safe_parse_datetime(date_str, year)
-        if not dt:
-            return date_str, "格式错误", "格式错误"
-        start_dt = dt.replace(hour=0, minute=0, second=0) if ':' not in date_str else dt
-        end_dt = dt.replace(hour=23, minute=59, second=59) if ':' not in date_str else dt
-        return date_str, start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')
+        return dt, dt
 
 # ------------------------ Streamlit UI ------------------------
 st.title("🧰 综合处理工具箱 - 完整版（带进度条 & 日志）")
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "网页表格抓取",
     "网页图片下载",
-    "图片裁剪",
+    "图片裁剪 + OCR重命名",
     "高校选科转换",
     "Excel日期处理"
 ])
@@ -338,137 +272,153 @@ with tab1:
     st.subheader("网页表格抓取")
     urls_text = st.text_area("输入网页URL列表（每行一个）", height=160)
     group_cols = st.text_input("分组列（逗号分隔，可选）")
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        if st.button("抓取表格", key="scrape"):
-            url_list = [u.strip() for u in urls_text.splitlines() if u.strip()]
-            if not url_list:
-                st.warning("请先输入有效URL列表")
-            else:
-                try:
-                    # start the job
-                    output = scrape_table(url_list, group_cols)
-                    if output:
-                        st.success("抓取完成，准备下载")
-                        st.download_button("下载抓取表格", data=output.getvalue(), file_name="网页抓取.xlsx")
-                    else:
-                        st.warning("未抓取到表格数据")
-                except Exception as e:
-                    log(f"抓取表格总流程失败: {e}", level="error")
-                    st.error("抓取表格出错，详情见日志")
+    if st.button("抓取表格", key="scrape"):
+        url_list = [u.strip() for u in urls_text.splitlines() if u.strip()]
+        if not url_list:
+            st.warning("请先输入有效URL列表")
+        else:
+            try:
+                output = scrape_table(url_list, group_cols)
+                if output:
+                    st.success("抓取完成，准备下载")
+                    st.download_button("下载抓取表格", data=output.getvalue(), file_name="网页抓取.xlsx")
+                else:
+                    st.warning("未抓取到表格数据")
+            except Exception as e:
+                log(f"抓取表格总流程失败: {e}", level="error")
+                st.error("抓取表格出错，详情见日志")
 
 # ------------------------ Tab 2: 网页图片下载 ------------------------
 with tab2:
     st.subheader("网页图片下载")
     urls_text2 = st.text_area("输入网页URL列表（每行一个）", height=160, key="img_urls")
     outdir_input = st.text_input("输出文件夹（可选，留空则保存到桌面默认文件夹）", value="", key="img_outdir")
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        if st.button("下载图片", key="img_download"):
-            url_list = [u.strip() for u in urls_text2.splitlines() if u.strip()]
-            if not url_list:
-                st.warning("请先输入有效URL列表")
-            else:
-                target_dir = outdir_input.strip() or None
-                try:
-                    output_dir, files, errors = download_images_from_urls(url_list, target_dir)
-                    st.success(f"完成！共下载 {len(files)} 张图片，保存到: {output_dir}")
-                    if files:
-                        # show first few thumbnails (lazy)
-                        preview = files[:8]
-                        cols = st.columns(len(preview))
-                        for c, fp in zip(cols, preview):
-                            try:
-                                c.image(fp, caption=os.path.basename(fp), use_column_width=True)
-                            except Exception:
-                                c.write(os.path.basename(fp))
-                    if errors:
-                        st.warning(f"有 {len(errors)} 个错误（见日志）")
-                except Exception as e:
-                    log(f"下载图片失败: {e}\n{traceback.format_exc()}", level="error")
-                    st.error("下载图片出错，详情见日志")
+    if st.button("下载图片", key="img_download"):
+        url_list = [u.strip() for u in urls_text2.splitlines() if u.strip()]
+        if not url_list:
+            st.warning("请先输入有效URL列表")
+        else:
+            target_dir = outdir_input.strip() or None
+            try:
+                output_dir, files, errors = download_images_from_urls(url_list, target_dir)
+                st.success(f"完成！共下载 {len(files)} 张图片，保存到: {output_dir}")
+            except Exception as e:
+                log(f"下载图片失败: {e}\n{traceback.format_exc()}", level="error")
+                st.error("下载图片出错，详情见日志")
 
-# ------------------------ Tab 3: 图片裁剪 ------------------------
+# ------------------------ Tab 3: 图片裁剪 + OCR重命名 ------------------------
 with tab3:
-    st.subheader("图片裁剪（仅裁剪保存）")
-    folder_path = st.text_input("图片文件夹路径（绝对路径）", key="img_folder")
-    x_center = st.number_input("页码中心X", value=788, key="x_center")
-    y_center = st.number_input("页码中心Y", value=1955, key="y_center")
-    crop_w = st.number_input("裁剪宽度(px)", value=200, key="crop_w")
-    crop_h = st.number_input("裁剪高度(px)", value=50, key="crop_h")
-    if st.button("裁剪图片", key="crop_btn"):
+    st.subheader("图片裁剪 + OCR页码识别重命名")
+    folder_path = st.text_input("图片文件夹路径（绝对路径）", key="ocr_img_folder")
+    x_center = st.number_input("页码中心X", value=788, key="ocr_x_center")
+    y_center = st.number_input("页码中心Y", value=1955, key="ocr_y_center")
+    crop_w = st.number_input("裁剪宽度(px)", value=200, key="ocr_crop_w")
+    crop_h = st.number_input("裁剪高度(px)", value=50, key="ocr_crop_h")
+    tesseract_path = st.text_input("Tesseract 路径", value=r"E:\tesseract-ocr\tesseract.exe")
+    preview_count = st.number_input("预览裁剪图数量", min_value=1, max_value=12, value=6)
+    if st.button("裁剪并重命名图片", key="ocr_crop_btn"):
         if not folder_path or not os.path.exists(folder_path):
             st.warning("请提供有效图片文件夹路径")
         else:
-            try:
-                output_folder = crop_images_only(folder_path, x_center, y_center, crop_w, crop_h)
-                st.success(f"完成！裁剪结果已保存到：{output_folder}")
-            except Exception as e:
-                log(f"裁剪失败: {e}\n{traceback.format_exc()}", level="error")
-                st.error("裁剪异常，详情见日志")
+            pytesseract.pytesseract.tesseract_cmd = tesseract_path
+            output_folder = os.path.join(os.path.expanduser("~"), "Desktop", "crop_results")
+            os.makedirs(output_folder, exist_ok=True)
+            img_exts = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
+            filenames = [f for f in os.listdir(folder_path) if f.lower().endswith(img_exts)]
+            used_pages = set()
+            preview_imgs = []
+
+            for filename in progress_iter(filenames, text="裁剪 + OCR重命名中"):
+                image_path = os.path.join(folder_path, filename)
+                try:
+                    img = Image.open(image_path).convert("RGB")
+                    width, height = img.size
+                    left = max(0, int(x_center - crop_w // 2))
+                    right = min(width, int(x_center + crop_w // 2))
+                    top = max(0, int(y_center - crop_h // 2))
+                    bottom = min(height, int(y_center + crop_h // 2))
+
+                    crop_img = img.crop((left, top, right, bottom))
+                    crop_img = crop_img.resize((crop_img.width * 2, crop_img.height * 2), Image.LANCZOS)
+                    gray = ImageOps.grayscale(crop_img)
+                    gray = ImageEnhance.Contrast(gray).enhance(3.0)
+                    bw = gray.point(lambda x: 0 if x < 128 else 255, '1')
+
+                    text = pytesseract.image_to_string(
+                        bw, config='--psm 7 -c tessedit_char_whitelist=0123456789'
+                    )
+                    matches = re.findall(r'\d+', text)
+                    if matches:
+                        page_number = int(matches[-1])
+                        while page_number in used_pages:
+                            page_number += 1
+                        used_pages.add(page_number)
+                    else:
+                        page_number = max(used_pages) + 1 if used_pages else 1
+                        used_pages.add(page_number)
+
+                    ext = os.path.splitext(filename)[1]
+                    new_name = f"{page_number:03d}{ext}"
+                    new_path = os.path.join(folder_path, new_name)
+                    os.rename(image_path, new_path)
+
+                    crop_save_path = os.path.join(output_folder, f"crop_{new_name}")
+                    bw.save(crop_save_path)
+
+                    if len(preview_imgs) < preview_count:
+                        preview_imgs.append(crop_save_path)
+
+                    log(f"{filename} -> {new_name} （裁剪结果已保存）")
+                except Exception as e:
+                    log(f"{filename} 处理失败: {e}", level="warning")
+                    continue
+
+            st.success(f"完成！裁剪 + OCR重命名结果已保存到：{output_folder}")
+
+            if preview_imgs:
+                cols = st.columns(len(preview_imgs))
+                for c, fp in zip(cols, preview_imgs):
+                    try:
+                        c.image(fp, caption=os.path.basename(fp), use_column_width=True)
+                    except Exception:
+                        c.write(os.path.basename(fp))
 
 # ------------------------ Tab 4: 高校选科转换 ------------------------
 with tab4:
     st.subheader("高校选科转换")
-    uploaded_file = st.file_uploader("上传Excel文件", type=["xlsx", "xls"], key="sel_excel")
+    uploaded_file = st.file_uploader("上传包含选科要求的Excel文件", type=["xlsx"])
     if uploaded_file:
-        try:
-            df = pd.read_excel(uploaded_file)
-            st.write("原始数据预览", df.head())
-            if st.button("转换选科", key="sel_btn"):
-                try:
-                    df_result = convert_selection_requirements(df)
-                    st.write("转换结果预览", df_result.head())
-                    towrite = BytesIO()
-                    df_result.to_excel(towrite, index=False)
-                    towrite.seek(0)
-                    st.download_button("下载转换结果Excel", data=towrite.getvalue(), file_name="选科转换结果.xlsx")
-                    st.success("选科转换完成")
-                except Exception as e:
-                    log(f"选科转换失败: {e}\n{traceback.format_exc()}", level="error")
-                    st.error("选科转换出错，详情见日志")
-        except Exception as e:
-            log(f"读取上传文件失败: {e}", level="error")
-            st.error("无法读取上传的 Excel 文件")
+        df = pd.read_excel(uploaded_file)
+        if st.button("开始转换"):
+            df_new = convert_selection_requirements(df)
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df_new.to_excel(writer, index=False)
+            output.seek(0)
+            st.success("转换完成")
+            st.download_button("下载转换结果", data=output.getvalue(), file_name="选科转换.xlsx")
 
 # ------------------------ Tab 5: Excel日期处理 ------------------------
 with tab5:
     st.subheader("Excel日期处理")
-    uploaded_file2 = st.file_uploader("上传Excel文件", type=["xlsx", "xls"], key="date_excel")
-    year = st.number_input("年份（用于补全）", value=datetime.now().year, key="date_year")
-    date_col = st.text_input("日期列名", value="日期", key="date_col")
-
-    if uploaded_file2:
-        try:
-            df2 = pd.read_excel(uploaded_file2)
-            st.write("原始数据预览", df2.head())
-            if st.button("处理日期", key="date_btn"):
-                try:
-                    start_times = []
-                    end_times = []
-                    originals = []
-                    # row-by-row processing (you selected 'row' granular mode)
-                    for d in progress_iter(list(df2[date_col]), text="日期处理中"):
-                        orig, start, end = process_date_range(d, int(year))
-                        originals.append(orig)
-                        start_times.append(start)
-                        end_times.append(end)
-                    df2_result = df2.copy()
-                    insert_at = df2_result.columns.get_loc(date_col) + 1
-                    df2_result.insert(insert_at, '开始时间', start_times)
-                    df2_result.insert(insert_at + 1, '结束时间', end_times)
-                    st.write("处理结果预览", df2_result.head())
-                    towrite2 = BytesIO()
-                    df2_result.to_excel(towrite2, index=False)
-                    towrite2.seek(0)
-                    st.download_button("下载日期处理结果Excel", data=towrite2.getvalue(), file_name="日期处理结果.xlsx")
-                    st.success("日期处理完成")
-                except Exception as e:
-                    log(f"日期处理失败: {e}\n{traceback.format_exc()}", level="error")
-                    st.error("日期处理出错，详情见日志")
-        except Exception as e:
-            log(f"读取上传文件失败: {e}", level="error")
-            st.error("无法读取上传的 Excel 文件")
+    uploaded_file2 = st.file_uploader("上传包含日期列的Excel文件", type=["xlsx"], key="date_excel")
+    year_input = st.number_input("默认年份", value=datetime.now().year)
+    date_col_input = st.text_input("日期列名", value="日期")
+    if uploaded_file2 and st.button("处理日期"):
+        df = pd.read_excel(uploaded_file2)
+        start_dates, end_dates = [], []
+        for d in progress_iter(df[date_col_input], text="处理日期中"):
+            start, end = process_date_range(d, year_input)
+            start_dates.append(start)
+            end_dates.append(end)
+        df["开始日期"] = start_dates
+        df["结束日期"] = end_dates
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False)
+        output.seek(0)
+        st.success("日期处理完成")
+        st.download_button("下载处理结果", data=output.getvalue(), file_name="日期处理.xlsx")
 
 # ------------------------ Footer ------------------------
 st.markdown("---")
