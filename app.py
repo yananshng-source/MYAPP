@@ -17,6 +17,8 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+import pytesseract
+from PIL import ImageEnhance
 # ------------------------ Config ------------------------
 st.set_page_config(page_title="综合处理工具箱", layout="wide")
 DEFAULT_TIMEOUT = 15
@@ -670,16 +672,127 @@ def process_date_range(date_str, year):
         end_dt = dt.replace(hour=23, minute=59, second=59) if ':' not in date_str else dt
         return date_str, start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')
 
+    # ------------------------ 图片OCR重命名函数 ------------------------
+    def ocr_rename_images(folder_path, x_center=788, y_center=1955, crop_width=200, crop_height=50):
+        """
+        批量OCR识别图片中的页码并重命名文件
+        """
+        log("开始OCR识别和重命名图片...")
+
+        # 创建输出文件夹
+        output_folder = os.path.join(os.path.expanduser("~"), "Desktop", "crop_results")
+        os.makedirs(output_folder, exist_ok=True)
+
+        # 支持的图片格式
+        img_exts = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
+
+        # 获取图片文件列表
+        filenames = [f for f in os.listdir(folder_path) if f.lower().endswith(img_exts)]
+
+        if not filenames:
+            log("未找到图片文件", level="warning")
+            return [], []
+
+        log(f"找到 {len(filenames)} 个图片文件")
+
+        results = []
+        errors = []
+        used_pages = set()
+
+        # 处理每个图片文件
+        for filename in progress_iter(filenames, text="OCR识别中"):
+            try:
+                image_path = os.path.join(folder_path, filename)
+                img = Image.open(image_path).convert("RGB")
+                width, height = img.size
+
+                # 计算裁剪框
+                left = max(0, x_center - crop_width // 2)
+                right = min(width, x_center + crop_width // 2)
+                top = max(0, y_center - crop_height // 2)
+                bottom = min(height, y_center + crop_height // 2)
+
+                # 裁剪页码区域
+                crop_img = img.crop((left, top, right, bottom))
+                # 放大2倍，提高OCR精度
+                crop_img = crop_img.resize((crop_img.width * 2, crop_img.height * 2), Image.LANCZOS)
+                # 灰度 + 对比度增强 + 二值化
+                gray = ImageOps.grayscale(crop_img)
+                gray = ImageEnhance.Contrast(gray).enhance(3.0)
+                bw = gray.point(lambda x: 0 if x < 128 else 255, '1')
+
+                # OCR识别页码，仅识别数字
+                text = pytesseract.image_to_string(
+                    bw, config='--psm 7 -c tessedit_char_whitelist=0123456789'
+                )
+                matches = re.findall(r'\d+', text)
+
+                if matches:
+                    # 只取最后一组数字，避免前面多余数字
+                    page_number = int(matches[-1])
+                    # 避免重复页码
+                    while page_number in used_pages:
+                        page_number += 1
+                    used_pages.add(page_number)
+                    ocr_status = "OCR识别成功"
+                else:
+                    # 识别失败，递增编号
+                    page_number = max(used_pages) + 1 if used_pages else 1
+                    used_pages.add(page_number)
+                    ocr_status = "OCR识别失败，使用递增编号"
+
+                # 构造新文件名并重命名原图
+                ext = os.path.splitext(filename)[1]
+                new_name = f"{page_number:03d}{ext}"
+                new_path = os.path.join(folder_path, new_name)
+
+                # 重命名文件
+                os.rename(image_path, new_path)
+
+                # 保存裁剪结果到桌面
+                crop_save_path = os.path.join(output_folder, f"crop_{new_name}")
+                bw.save(crop_save_path)
+
+                results.append({
+                    '原文件名': filename,
+                    '新文件名': new_name,
+                    '页码': page_number,
+                    'OCR识别文本': text.strip(),
+                    '状态': ocr_status,
+                    '裁剪结果路径': crop_save_path
+                })
+
+                log(f"✅ {filename} -> {new_name} ({ocr_status})")
+
+            except Exception as e:
+                error_msg = f"{filename} 处理失败: {e}"
+                errors.append(error_msg)
+                log(error_msg, level="error")
+                continue
+
+        log(f"OCR重命名完成！成功: {len(results)} 个，失败: {len(errors)} 个")
+        return results, errors
+
+    # ------------------------ 检查Tesseract安装 ------------------------
+    def check_tesseract_installation():
+        """检查Tesseract是否安装"""
+        try:
+            pytesseract.get_tesseract_version()
+            return True, "Tesseract OCR已安装"
+        except Exception as e:
+            return False, f"Tesseract OCR未安装或路径错误: {e}"
+
 
 # ------------------------ Streamlit UI ------------------------
 st.title("🧰 综合处理工具箱 - 完整版（带进度条 & 日志）")
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "网页表格抓取",
     "网页图片下载",
     "图片裁剪",
     "高校选科转换",
     "Excel日期处理",
-    "招生数据处理"
+    "招生数据处理",
+    "图片OCR重命名"
 ])
 
 # side: logs
@@ -1068,6 +1181,157 @@ with tab6:
         except Exception as e:
             st.error(f"处理过程中出现错误: {e}")
             st.info("请检查上传的文件格式是否正确")
+# ------------------------ Tab 7: 图片OCR重命名 ------------------------
+with tab7:
+    st.subheader("🔤 图片OCR重命名")
+    st.markdown("""
+    批量识别图片中的页码并自动重命名文件。
+
+    **功能特点：**
+    - 自动识别图片中的数字页码
+    - 智能处理重复页码
+    - 保存裁剪区域用于验证
+    - 支持常见图片格式
+    """)
+
+    # 检查Tesseract安装状态
+    tesseract_ok, tesseract_msg = check_tesseract_installation()
+    if tesseract_ok:
+        st.success(tesseract_msg)
+    else:
+        st.error(tesseract_msg)
+        st.info("请先安装Tesseract OCR并配置正确路径")
+
+    # 输入参数
+    col1, col2 = st.columns(2)
+    with col1:
+        folder_path_ocr = st.text_input(
+            "图片文件夹路径",
+            placeholder="例如: D:\\下载内容\\图片文件夹",
+            help="包含需要重命名的图片文件的文件夹路径"
+        )
+
+        x_center_ocr = st.number_input(
+            "页码中心X坐标",
+            value=788,
+            help="页码在图片中的水平中心位置"
+        )
+
+        crop_width_ocr = st.number_input(
+            "裁剪宽度(px)",
+            value=200,
+            help="水平方向裁剪宽度"
+        )
+
+    with col2:
+        # 显示当前工作目录信息
+        st.info(f"当前工作目录: `{os.getcwd()}`")
+
+        y_center_ocr = st.number_input(
+            "页码中心Y坐标",
+            value=1955,
+            help="页码在图片中的垂直中心位置"
+        )
+
+        crop_height_ocr = st.number_input(
+            "裁剪高度(px)",
+            value=50,
+            help="垂直方向裁剪高度"
+        )
+
+    # 高级选项
+    with st.expander("🔧 高级选项", expanded=False):
+        st.info("""
+        **OCR配置说明：**
+        - PSM 7: 将图像视为单个文本行
+        - 只识别数字: 0-9
+        - 对比度增强: 3.0倍
+        - 图像放大: 2倍
+        """)
+
+        # 可以添加更多OCR参数配置
+        show_debug = st.checkbox("显示详细处理信息", value=True)
+
+    # 处理按钮
+    if st.button("🚀 开始OCR重命名", type="primary", key="ocr_rename"):
+        if not folder_path_ocr or not os.path.exists(folder_path_ocr):
+            st.error("请输入有效的图片文件夹路径")
+        elif not tesseract_ok:
+            st.error("Tesseract OCR未正确安装，无法进行OCR识别")
+        else:
+            try:
+                with st.spinner("正在处理图片，请稍候..."):
+                    results, errors = ocr_rename_images(
+                        folder_path_ocr,
+                        x_center_ocr,
+                        y_center_ocr,
+                        crop_width_ocr,
+                        crop_height_ocr
+                    )
+
+                # 显示处理结果
+                if results:
+                    st.success(f"✅ OCR重命名完成！成功处理 {len(results)} 个文件")
+
+                    # 显示结果表格
+                    st.subheader("📋 处理结果")
+                    results_df = pd.DataFrame(results)
+                    st.dataframe(results_df, use_container_width=True)
+
+                    # 显示统计信息
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("成功数量", len(results))
+                    with col2:
+                        success_rate = len([r for r in results if "成功" in r['状态']])
+                        st.metric("OCR识别成功", success_rate)
+                    with col3:
+                        st.metric("失败数量", len(errors))
+
+                    # 显示裁剪结果预览
+                    if show_debug and len(results) > 0:
+                        st.subheader("🔍 裁剪结果预览")
+                        # 显示前几个裁剪结果
+                        preview_count = min(3, len(results))
+                        cols = st.columns(preview_count)
+
+                        for i, result in enumerate(results[:preview_count]):
+                            with cols[i]:
+                                if os.path.exists(result['裁剪结果路径']):
+                                    st.image(
+                                        result['裁剪结果路径'],
+                                        caption=f"{result['原文件名']} -> {result['新文件名']}",
+                                        use_column_width=True
+                                    )
+                                    st.caption(f"OCR识别: '{result['OCR识别文本']}'")
+
+                    # 下载处理结果
+                    st.subheader("📥 下载处理报告")
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        results_df.to_excel(writer, index=False, sheet_name='OCR重命名结果')
+
+                    st.download_button(
+                        label="📥 下载处理报告Excel",
+                        data=output.getvalue(),
+                        file_name="OCR重命名报告.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+
+                # 显示错误信息
+                if errors:
+                    st.warning(f"有 {len(errors)} 个文件处理失败:")
+                    for error in errors:
+                        st.error(error)
+
+            except Exception as e:
+                error_msg = f"OCR重命名过程出错: {e}"
+                log(error_msg, level="error")
+                st.error(error_msg)
+
+                if show_debug:
+                    with st.expander("错误详情", expanded=False):
+                        st.code(traceback.format_exc())
 # ------------------------ Footer ------------------------
 st.markdown("---")
 st.caption("说明：已默认启用统一请求配置（超时与证书策略）。若需将 VERIFY_SSL 设为 True，请修改文件顶部的常量并重启。")
