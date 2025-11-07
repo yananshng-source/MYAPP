@@ -118,6 +118,7 @@ def create_zip_download(files, zip_name="downloaded_images.zip"):
     return zip_buffer
 
 # ------------------------ 招生数据处理函数 ------------------------
+# ------------------------ 招生数据处理函数 ------------------------
 def process_admission_data(df_source):
     """
     处理招生数据，按照指定规则分组并生成结果表格
@@ -128,7 +129,7 @@ def process_admission_data(df_source):
     df_source = df_source.replace({'^': '', '~': ''}, regex=True)
 
     # 处理数值字段，但不填充空值
-    numeric_columns = ['最高分', '最低分', '最低分位次', '录取人数']
+    numeric_columns = ['最高分', '最低分', '最低分位次', '录取人数', '招生人数']
     for col in numeric_columns:
         if col in df_source.columns:
             df_source[col] = pd.to_numeric(df_source[col], errors='coerce')
@@ -167,25 +168,32 @@ def process_admission_data(df_source):
     df_source['招生类别'] = df_source.apply(determine_admission_category, axis=1)
 
     # 处理层次字段 - 确保不为空
-    df_source['层次'] = df_source.get('层次', '本科(普通)')
-    df_source['层次'] = df_source['层次'].fillna('本科(普通)')
+    if '层次' in df_source.columns:
+        df_source['层次'] = df_source['层次'].fillna('本科(普通)')
+    else:
+        df_source['层次'] = '本科(普通)'
 
     # 处理招生类型 - 确保不为空
-    df_source['招生类型'] = df_source.get('招生类型', '')
-    df_source['招生类型'] = df_source['招生类型'].fillna('')
+    if '招生类型' in df_source.columns:
+        df_source['招生类型'] = df_source['招生类型'].fillna('')
+    else:
+        df_source['招生类型'] = ''
 
     # 处理专业组代码 - 确保不为空
-    df_source['专业组代码'] = df_source.get('专业组代码', '')
-    df_source['专业组代码'] = df_source['专业组代码'].fillna('')
+    if '专业组代码' in df_source.columns:
+        df_source['专业组代码'] = df_source['专业组代码'].fillna('')
+    else:
+        df_source['专业组代码'] = ''
 
     # 处理其他分组列 - 确保不为空
     df_source['省份'] = df_source['省份'].fillna('')
     df_source['批次'] = df_source['批次'].fillna('')
+    df_source['学校'] = df_source['学校'].fillna('')
 
     log("数据预处理完成，开始分组...")
 
-    # 分组处理 - 按照指定的列分组
-    grouping_columns = ['省份', '招生类别', '批次', '层次', '招生类型', '专业组代码']
+    # 分组处理 - 按照指定的列分组（加上学校）
+    grouping_columns = ['学校', '省份', '招生类别', '批次', '层次', '招生类型', '专业组代码']
 
     log(f"使用以下列进行分组: {grouping_columns}")
 
@@ -197,20 +205,22 @@ def process_admission_data(df_source):
     for group_key, group_data in df_source.groupby(grouping_columns):
         group_count += 1
         # 解包分组键
-        省份, 招生类别, 批次, 层次, 招生类型, 专业组代码 = group_key
+        学校, 省份, 招生类别, 批次, 层次, 招生类型, 专业组代码 = group_key
 
-        # 计算组内聚合值
-        最高分 = group_data['最高分'].max() if '最高分' in group_data.columns and not group_data[
-            '最高分'].isna().all() else pd.NA
-        最低分 = group_data['最低分'].min() if '最低分' in group_data.columns and not group_data[
-            '最低分'].isna().all() else pd.NA
+        # 计算组内聚合值 - 根据源数据中是否有该列来决定处理方式
+        最高分 = pd.NA
+        if '最高分' in group_data.columns and not group_data['最高分'].isna().all():
+            最高分 = group_data['最高分'].max()
+
+        最低分 = pd.NA
+        if '最低分' in group_data.columns and not group_data['最低分'].isna().all():
+            最低分 = group_data['最低分'].min()
 
         # 找到最低分对应的记录
         最低分位次 = pd.NA
         最低分专业组代码 = 专业组代码
         数据来源 = ''
         首选科目 = ''
-        学校名称 = ''
 
         if pd.notna(最低分) and '最低分' in group_data.columns:
             min_score_rows = group_data[group_data['最低分'] == 最低分]
@@ -220,25 +230,26 @@ def process_admission_data(df_source):
                 最低分专业组代码 = min_score_row.get('专业组代码', 专业组代码)
                 数据来源 = min_score_row.get('数据来源', '')
                 首选科目 = min_score_row.get('首选科目', '')  # 使用记录中的首选科目
-                学校名称 = min_score_row.get('学校', '')
 
         # 如果没找到最低分记录，使用组内第一条记录
-        if not 学校名称 and len(group_data) > 0:
+        if not 数据来源 and len(group_data) > 0:
             first_row = group_data.iloc[0]
             数据来源 = first_row.get('数据来源', '')
             首选科目 = first_row.get('首选科目', '')  # 使用记录中的首选科目
-            学校名称 = first_row.get('学校', '')
 
         # 计算录取人数总和（源数据中有录取人数）
-        录取人数 = group_data['录取人数'].sum() if '录取人数' in group_data.columns and not group_data[
-            '录取人数'].isna().all() else pd.NA
+        录取人数 = pd.NA
+        if '录取人数' in group_data.columns and not group_data['录取人数'].isna().all():
+            录取人数 = group_data['录取人数'].sum()
 
-        # 招生人数置空（源数据中没有）
+        # 招生人数处理 - 源数据中有就处理，没有就置空
         招生人数 = pd.NA
+        if '招生人数' in group_data.columns and not group_data['招生人数'].isna().all():
+            招生人数 = group_data['招生人数'].sum()
 
         # 添加到结果列表
         results.append({
-            '学校名称': 学校名称,
+            '学校名称': 学校,
             '省份': 省份,
             '招生类别': 招生类别,
             '招生批次': 批次,
@@ -247,7 +258,7 @@ def process_admission_data(df_source):
             '最低分': 最低分,
             '最低分位次': 最低分位次,
             '录取人数': 录取人数,
-            '招生人数': 招生人数,  # 置空
+            '招生人数': 招生人数,  # 根据源数据决定是否有值
             '数据来源': 数据来源,
             '专业组代码': 最低分专业组代码,  # 使用最低分对应的专业组代码
             '首选科目': 首选科目,  # 只有历史类/物理类才有值，其他为空
@@ -262,7 +273,7 @@ def process_admission_data(df_source):
     log(f"分组后共有 {len(result_df)} 组数据")
 
     # 确保数值字段保持正确的数据类型
-    numeric_columns = ['最高分', '最低分', '最低分位次', '录取人数']
+    numeric_columns = ['最高分', '最低分', '最低分位次', '录取人数', '招生人数']
     for col in numeric_columns:
         if col in result_df.columns:
             result_df[col] = pd.to_numeric(result_df[col], errors='coerce')
@@ -676,7 +687,6 @@ with st.sidebar.expander("运行日志（最新）", expanded=True):
         st.text(line)
 
 # ------------------------ Tab 1: 网页表格抓取 ------------------------
-# ------------------------ Tab 1: 网页表格抓取 ------------------------
 with tab1:
     st.subheader("网页表格抓取")
     urls_text = st.text_area("输入网页URL列表（每行一个）", height=160,
@@ -915,17 +925,18 @@ with tab5:
             st.error("无法读取上传的 Excel 文件")
 
 # ------------------------ Tab 6: 招生数据处理 ------------------------
+# ------------------------ Tab 6: 招生数据处理 ------------------------
 with tab6:
     st.subheader("🎓 招生数据处理")
     st.markdown("""
     本工具按照以下规则处理招生数据：
-    - **分组规则**：省份、科类、批次、层次、招生类型、专业组代码
+    - **分组规则**：学校、省份、科类、批次、层次、招生类型、专业组代码
     - **聚合规则**：
-      - 最高分 = 组内最高分的最大值
-      - 最低分 = 组内最低分的最小值  
+      - 最高分 = 组内最高分的最大值（源数据中有就处理，没有就置空）
+      - 最低分 = 组内最低分的最小值（源数据中有就处理，没有就置空）
       - 最低分位次 = 最低分对应的位次
-      - 录取人数 = 组内录取人数总和
-      - 招生人数 = 空值（源数据中没有）
+      - 录取人数 = 组内录取人数总和（源数据中有就处理，没有就置空）
+      - 招生人数 = 组内招生人数总和（源数据中有就处理，没有就置空）
       - 专业组代码 = 最低分对应的专业组代码
       - 首选科目 = 只有历史类/物理类才有值，其他为空
     """)
@@ -934,7 +945,7 @@ with tab6:
     uploaded_file_admission = st.file_uploader(
         "上传招生数据Excel文件",
         type=['xlsx'],
-        help="请上传包含招生数据的Excel文件",
+        help="请上传包含招生数据的Excel文件，需要包含学校、省份、科类、批次等字段",
         key="admission_excel"
     )
 
@@ -943,10 +954,19 @@ with tab6:
             # 读取上传的文件
             df_source = pd.read_excel(uploaded_file_admission)
 
+            # 显示源数据信息
+            st.subheader("📊 源数据信息")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.write(f"**总记录数:** {len(df_source)}")
+            with col2:
+                st.write(f"**学校数量:** {df_source['学校'].nunique() if '学校' in df_source.columns else 'N/A'}")
+            with col3:
+                st.write(
+                    f"**包含的数值字段:** {[col for col in ['最高分', '最低分', '录取人数', '招生人数'] if col in df_source.columns]}")
+
             # 显示源数据预览
-            st.subheader("📊 源数据预览")
             st.dataframe(df_source.head(10), use_container_width=True)
-            st.write(f"源数据形状: {df_source.shape}")
 
             # 处理按钮
             if st.button("🚀 开始处理招生数据", type="primary", key="admission_btn"):
@@ -976,32 +996,22 @@ with tab6:
                 # 显示数据预览
                 st.dataframe(result_df, use_container_width=True)
 
-                # 显示详细统计
-                st.subheader("📈 详细统计")
+                # 显示字段统计
+                st.subheader("📈 字段统计")
 
-                col1, col2 = st.columns(2)
+                # 检查哪些数值字段有数据
+                numeric_fields = ['最高分', '最低分', '录取人数', '招生人数']
+                available_fields = []
 
-                with col1:
-                    st.write("**招生类别分布**")
-                    st.write(result_df['招生类别'].value_counts())
+                for field in numeric_fields:
+                    if field in result_df.columns and not result_df[field].isna().all():
+                        valid_count = result_df[field].notna().sum()
+                        available_fields.append((field, valid_count))
 
-                    st.write("**首选科目分布**")
-                    preferred_subject_dist = result_df['首选科目'].value_counts()
-                    if '' in preferred_subject_dist:
-                        preferred_subject_dist['空值'] = preferred_subject_dist.pop('')
-                    st.write(preferred_subject_dist)
-
-                with col2:
-                    if '最高分' in result_df.columns:
-                        valid_max_scores = result_df['最高分'].dropna()
-                        if len(valid_max_scores) > 0:
-                            st.write("**分数范围**")
-                            st.write(f"最高分: {valid_max_scores.min():.1f} - {valid_max_scores.max():.1f}")
-
-                    if '最低分' in result_df.columns:
-                        valid_min_scores = result_df['最低分'].dropna()
-                        if len(valid_min_scores) > 0:
-                            st.write(f"最低分: {valid_min_scores.min():.1f} - {valid_min_scores.max():.1f}")
+                if available_fields:
+                    st.write("**有效数据字段统计:**")
+                    for field, count in available_fields:
+                        st.write(f"- {field}: {count} 条有效数据 ({count / len(result_df) * 100:.1f}%)")
 
                 # 下载功能
                 st.subheader("📥 下载处理结果")
@@ -1023,7 +1033,7 @@ with tab6:
 
         except Exception as e:
             st.error(f"处理过程中出现错误: {e}")
-            st.info("请检查上传的文件格式是否正确")
+            st.info("请检查上传的文件格式是否正确，确保包含必要的字段")
 
 # ------------------------ Footer ------------------------
 st.markdown("---")
