@@ -19,6 +19,7 @@ import tempfile
 import zipfile
 import pytesseract
 from PIL import ImageEnhance
+pytesseract.pytesseract.tesseract_cmd = r'E:\tesseract-ocr\tesseract.exe'
 # ------------------------ Config ------------------------
 st.set_page_config(page_title="综合处理工具箱", layout="wide")
 DEFAULT_TIMEOUT = 15
