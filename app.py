@@ -672,116 +672,118 @@ def process_date_range(date_str, year):
         end_dt = dt.replace(hour=23, minute=59, second=59) if ':' not in date_str else dt
         return date_str, start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')
 
-    # ------------------------ 图片OCR重命名函数 ------------------------
-    def ocr_rename_images(folder_path, x_center=788, y_center=1955, crop_width=200, crop_height=50):
-        """
-        批量OCR识别图片中的页码并重命名文件
-        """
-        log("开始OCR识别和重命名图片...")
 
-        # 创建输出文件夹
-        output_folder = os.path.join(os.path.expanduser("~"), "Desktop", "crop_results")
-        os.makedirs(output_folder, exist_ok=True)
+# ------------------------ 检查Tesseract安装 ------------------------
+def check_tesseract_installation():
+    """检查Tesseract是否安装"""
+    try:
+        # 尝试获取Tesseract版本
+        pytesseract.get_tesseract_version()
+        return True, "Tesseract OCR已安装"
+    except Exception as e:
+        return False, f"Tesseract OCR未安装或路径错误: {e}"
 
-        # 支持的图片格式
-        img_exts = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
 
-        # 获取图片文件列表
-        filenames = [f for f in os.listdir(folder_path) if f.lower().endswith(img_exts)]
+# ------------------------ 图片OCR重命名函数 ------------------------
+def ocr_rename_images(folder_path, x_center=788, y_center=1955, crop_width=200, crop_height=50):
+    """
+    批量OCR识别图片中的页码并重命名文件
+    """
+    log("开始OCR识别和重命名图片...")
 
-        if not filenames:
-            log("未找到图片文件", level="warning")
-            return [], []
+    # 创建输出文件夹
+    output_folder = os.path.join(os.path.expanduser("~"), "Desktop", "crop_results")
+    os.makedirs(output_folder, exist_ok=True)
 
-        log(f"找到 {len(filenames)} 个图片文件")
+    # 支持的图片格式
+    img_exts = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
 
-        results = []
-        errors = []
-        used_pages = set()
+    # 获取图片文件列表
+    filenames = [f for f in os.listdir(folder_path) if f.lower().endswith(img_exts)]
 
-        # 处理每个图片文件
-        for filename in progress_iter(filenames, text="OCR识别中"):
-            try:
-                image_path = os.path.join(folder_path, filename)
-                img = Image.open(image_path).convert("RGB")
-                width, height = img.size
+    if not filenames:
+        log("未找到图片文件", level="warning")
+        return [], []
 
-                # 计算裁剪框
-                left = max(0, x_center - crop_width // 2)
-                right = min(width, x_center + crop_width // 2)
-                top = max(0, y_center - crop_height // 2)
-                bottom = min(height, y_center + crop_height // 2)
+    log(f"找到 {len(filenames)} 个图片文件")
 
-                # 裁剪页码区域
-                crop_img = img.crop((left, top, right, bottom))
-                # 放大2倍，提高OCR精度
-                crop_img = crop_img.resize((crop_img.width * 2, crop_img.height * 2), Image.LANCZOS)
-                # 灰度 + 对比度增强 + 二值化
-                gray = ImageOps.grayscale(crop_img)
-                gray = ImageEnhance.Contrast(gray).enhance(3.0)
-                bw = gray.point(lambda x: 0 if x < 128 else 255, '1')
+    results = []
+    errors = []
+    used_pages = set()
 
-                # OCR识别页码，仅识别数字
-                text = pytesseract.image_to_string(
-                    bw, config='--psm 7 -c tessedit_char_whitelist=0123456789'
-                )
-                matches = re.findall(r'\d+', text)
-
-                if matches:
-                    # 只取最后一组数字，避免前面多余数字
-                    page_number = int(matches[-1])
-                    # 避免重复页码
-                    while page_number in used_pages:
-                        page_number += 1
-                    used_pages.add(page_number)
-                    ocr_status = "OCR识别成功"
-                else:
-                    # 识别失败，递增编号
-                    page_number = max(used_pages) + 1 if used_pages else 1
-                    used_pages.add(page_number)
-                    ocr_status = "OCR识别失败，使用递增编号"
-
-                # 构造新文件名并重命名原图
-                ext = os.path.splitext(filename)[1]
-                new_name = f"{page_number:03d}{ext}"
-                new_path = os.path.join(folder_path, new_name)
-
-                # 重命名文件
-                os.rename(image_path, new_path)
-
-                # 保存裁剪结果到桌面
-                crop_save_path = os.path.join(output_folder, f"crop_{new_name}")
-                bw.save(crop_save_path)
-
-                results.append({
-                    '原文件名': filename,
-                    '新文件名': new_name,
-                    '页码': page_number,
-                    'OCR识别文本': text.strip(),
-                    '状态': ocr_status,
-                    '裁剪结果路径': crop_save_path
-                })
-
-                log(f"✅ {filename} -> {new_name} ({ocr_status})")
-
-            except Exception as e:
-                error_msg = f"{filename} 处理失败: {e}"
-                errors.append(error_msg)
-                log(error_msg, level="error")
-                continue
-
-        log(f"OCR重命名完成！成功: {len(results)} 个，失败: {len(errors)} 个")
-        return results, errors
-
-    # ------------------------ 检查Tesseract安装 ------------------------
-    def check_tesseract_installation():
-        """检查Tesseract是否安装"""
+    # 处理每个图片文件
+    for filename in progress_iter(filenames, text="OCR识别中"):
         try:
-            pytesseract.get_tesseract_version()
-            return True, "Tesseract OCR已安装"
-        except Exception as e:
-            return False, f"Tesseract OCR未安装或路径错误: {e}"
+            image_path = os.path.join(folder_path, filename)
+            img = Image.open(image_path).convert("RGB")
+            width, height = img.size
 
+            # 计算裁剪框
+            left = max(0, x_center - crop_width // 2)
+            right = min(width, x_center + crop_width // 2)
+            top = max(0, y_center - crop_height // 2)
+            bottom = min(height, y_center + crop_height // 2)
+
+            # 裁剪页码区域
+            crop_img = img.crop((left, top, right, bottom))
+            # 放大2倍，提高OCR精度
+            crop_img = crop_img.resize((crop_img.width * 2, crop_img.height * 2), Image.LANCZOS)
+            # 灰度 + 对比度增强 + 二值化
+            gray = ImageOps.grayscale(crop_img)
+            gray = ImageEnhance.Contrast(gray).enhance(3.0)
+            bw = gray.point(lambda x: 0 if x < 128 else 255, '1')
+
+            # OCR识别页码，仅识别数字
+            text = pytesseract.image_to_string(
+                bw, config='--psm 7 -c tessedit_char_whitelist=0123456789'
+            )
+            matches = re.findall(r'\d+', text)
+
+            if matches:
+                # 只取最后一组数字，避免前面多余数字
+                page_number = int(matches[-1])
+                # 避免重复页码
+                while page_number in used_pages:
+                    page_number += 1
+                used_pages.add(page_number)
+                ocr_status = "OCR识别成功"
+            else:
+                # 识别失败，递增编号
+                page_number = max(used_pages) + 1 if used_pages else 1
+                used_pages.add(page_number)
+                ocr_status = "OCR识别失败，使用递增编号"
+
+            # 构造新文件名并重命名原图
+            ext = os.path.splitext(filename)[1]
+            new_name = f"{page_number:03d}{ext}"
+            new_path = os.path.join(folder_path, new_name)
+
+            # 重命名文件
+            os.rename(image_path, new_path)
+
+            # 保存裁剪结果到桌面
+            crop_save_path = os.path.join(output_folder, f"crop_{new_name}")
+            bw.save(crop_save_path)
+
+            results.append({
+                '原文件名': filename,
+                '新文件名': new_name,
+                '页码': page_number,
+                'OCR识别文本': text.strip(),
+                '状态': ocr_status,
+                '裁剪结果路径': crop_save_path
+            })
+
+            log(f"✅ {filename} -> {new_name} ({ocr_status})")
+
+        except Exception as e:
+            error_msg = f"{filename} 处理失败: {e}"
+            errors.append(error_msg)
+            log(error_msg, level="error")
+            continue
+
+    log(f"OCR重命名完成！成功: {len(results)} 个，失败: {len(errors)} 个")
+    return results, errors
 
 # ------------------------ Streamlit UI ------------------------
 st.title("🧰 综合处理工具箱 - 完整版（带进度条 & 日志）")
@@ -1200,7 +1202,12 @@ with tab7:
         st.success(tesseract_msg)
     else:
         st.error(tesseract_msg)
-        st.info("请先安装Tesseract OCR并配置正确路径")
+        st.info("""
+        **Tesseract OCR安装指南：**
+        1. Windows: 下载安装 [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki)
+        2. 修改代码中的路径：`pytesseract.pytesseract.tesseract_cmd = r"你的tesseract安装路径\\tesseract.exe"`
+        3. 或者使用以下命令安装：`pip install pytesseract`
+        """)
 
     # 输入参数
     col1, col2 = st.columns(2)
