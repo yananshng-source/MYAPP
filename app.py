@@ -1194,74 +1194,140 @@ with tab7:
     st.subheader("🔤 图片OCR重命名")
     st.success("✅ Tesseract v5.5.0 已就绪！")
 
-    # 方法1：手动输入路径
-    st.write("### 方法1：手动输入路径")
+    # 方法1：手动输入路径（主要方法）
+    st.write("### 📍 输入图片文件夹路径")
+
+    # 提供常见路径模板
+    st.info("**常见路径格式:**")
+    st.code("""
+D:\\下载内容\\图片文件夹
+C:\\Users\\你的用户名\\Desktop\\图片
+D:\\图片资料
+E:\\工作文件\\扫描图片
+    """)
+
     folder_path_ocr = st.text_input(
-        "图片文件夹路径",
-        placeholder="例如: D:\\下载内容\\图片文件夹",
-        help="包含需要重命名的图片文件的文件夹完整路径"
+        "图片文件夹完整路径",
+        placeholder="例如: D:\\下载内容\\图片助手批量下载",
+        help="请输入完整的文件夹路径"
     )
 
-    # 方法2：使用目录选择器
-    st.write("### 方法2：选择文件夹")
+    # 方法2：显示当前目录结构（辅助选择）
+    st.write("### 📂 当前目录结构参考")
     try:
-        import tkinter as tk
-        from tkinter import filedialog
+        current_dir = os.getcwd()
+        st.write(f"**当前工作目录:** `{current_dir}`")
 
-        if st.button("📁 浏览选择文件夹"):
-            root = tk.Tk()
-            root.withdraw()  # 隐藏主窗口
-            root.attributes('-topmost', True)  # 置顶
+        # 显示当前目录下的文件夹
+        items = os.listdir(current_dir)
+        folders = [item for item in items if os.path.isdir(os.path.join(current_dir, item))]
 
-            selected_folder = filedialog.askdirectory(
-                title="选择包含图片的文件夹"
-            )
-            if selected_folder:
-                folder_path_ocr = selected_folder
-                st.success(f"已选择文件夹: {selected_folder}")
-                st.text_input("选择的路径", value=selected_folder, key="selected_path")
-    except ImportError:
-        st.warning("无法使用图形化文件夹选择")
+        if folders:
+            st.write("**当前目录下的文件夹:**")
+            for folder in folders[:10]:  # 只显示前10个
+                full_path = os.path.join(current_dir, folder)
+                st.write(f"- `{full_path}`")
+        else:
+            st.write("当前目录下没有子文件夹")
 
-    # 显示当前目录信息
-    st.info(f"当前工作目录: `{os.getcwd()}`")
+    except Exception as e:
+        st.warning(f"无法读取目录: {e}")
 
-    # 检查路径是否存在
+    # 方法3：路径验证和预览
     if folder_path_ocr:
+        st.write("### 🔍 路径验证")
+
+        # 检查路径是否存在
         if os.path.exists(folder_path_ocr):
-            # 显示文件夹内容
-            try:
-                files = os.listdir(folder_path_ocr)
-                image_files = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff'))]
+            if os.path.isdir(folder_path_ocr):
+                st.success("✅ 文件夹路径有效")
 
-                if image_files:
-                    st.success(f"✅ 找到 {len(image_files)} 个图片文件")
-                    st.write("**文件夹中的图片文件:**")
-                    for i, img_file in enumerate(image_files[:10]):  # 显示前10个
-                        st.write(f"- {img_file}")
-                    if len(image_files) > 10:
-                        st.write(f"- ... 还有 {len(image_files) - 10} 个文件")
-                else:
-                    st.warning("⚠️ 文件夹中没有找到图片文件")
-                    st.write("支持的格式: .png, .jpg, .jpeg, .bmp, .tiff")
+                # 显示文件夹内容
+                try:
+                    files = os.listdir(folder_path_ocr)
+                    image_files = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff'))]
 
-            except PermissionError:
-                st.error("❌ 没有权限访问该文件夹")
-            except Exception as e:
-                st.error(f"❌ 读取文件夹失败: {e}")
+                    if image_files:
+                        st.success(f"✅ 找到 {len(image_files)} 个图片文件")
+                        st.write("**前10个图片文件:**")
+                        for i, img_file in enumerate(image_files[:10]):
+                            file_path = os.path.join(folder_path_ocr, img_file)
+                            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+                            st.write(f"- `{img_file}` ({file_size} bytes)")
+
+                        if len(image_files) > 10:
+                            st.write(f"- ... 还有 {len(image_files) - 10} 个文件")
+
+                        # 显示图片预览
+                        st.write("**图片预览:**")
+                        preview_cols = st.columns(3)
+                        for i, img_file in enumerate(image_files[:3]):  # 预览前3张
+                            if i < len(preview_cols):
+                                with preview_cols[i]:
+                                    try:
+                                        img_path = os.path.join(folder_path_ocr, img_file)
+                                        img = Image.open(img_path)
+                                        st.image(img, caption=img_file, width=150)
+                                    except Exception as e:
+                                        st.error(f"预览失败: {img_file}")
+                    else:
+                        st.warning("⚠️ 文件夹中没有找到图片文件")
+                        st.write("支持的格式: .png, .jpg, .jpeg, .bmp, .tiff")
+
+                except PermissionError:
+                    st.error("❌ 没有权限访问该文件夹")
+                except Exception as e:
+                    st.error(f"❌ 读取文件夹失败: {e}")
+            else:
+                st.error("❌ 路径不是文件夹")
         else:
             st.error("❌ 文件夹路径不存在")
 
+            # 提供建议
+            st.write("**建议:**")
+            st.write("1. 检查路径拼写是否正确")
+            st.write("2. 确保使用双反斜杠 `\\\\` 或原始字符串 `r\"路径\"`")
+            st.write("3. 检查文件夹是否存在")
+
     # OCR参数设置
-    st.write("### OCR参数设置")
+    st.write("### ⚙️ OCR参数设置")
     col1, col2 = st.columns(2)
     with col1:
-        x_center_ocr = st.number_input("页码中心X坐标", value=788)
-        crop_width_ocr = st.number_input("裁剪宽度(px)", value=200)
+        x_center_ocr = st.number_input("页码中心X坐标", value=788, help="距离图片左边的像素数")
+        crop_width_ocr = st.number_input("裁剪宽度(px)", value=200, help="水平裁剪区域宽度")
 
     with col2:
-        y_center_ocr = st.number_input("页码中心Y坐标", value=1955)
-        crop_height_ocr = st.number_input("裁剪高度(px)", value=50)
+        y_center_ocr = st.number_input("页码中心Y坐标", value=1955, help="距离图片顶部的像素数")
+        crop_height_ocr = st.number_input("裁剪高度(px)", value=50, help="垂直裁剪区域高度")
+
+    # 测试坐标按钮
+    if st.button("🎯 测试当前坐标", key="test_coords"):
+        if folder_path_ocr and os.path.exists(folder_path_ocr):
+            # 找一张图片测试裁剪
+            image_files = [f for f in os.listdir(folder_path_ocr) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+            if image_files:
+                test_image_path = os.path.join(folder_path_ocr, image_files[0])
+                try:
+                    img = Image.open(test_image_path)
+                    # 裁剪测试区域
+                    left = max(0, x_center_ocr - crop_width_ocr // 2)
+                    right = min(img.width, x_center_ocr + crop_width_ocr // 2)
+                    top = max(0, y_center_ocr - crop_height_ocr // 2)
+                    bottom = min(img.height, y_center_ocr + crop_height_ocr // 2)
+
+                    crop_img = img.crop((left, top, right, bottom))
+                    crop_img = crop_img.resize((crop_img.width * 2, crop_img.height * 2), Image.LANCZOS)
+
+                    st.write("**裁剪区域预览:**")
+                    st.image(crop_img, caption=f"裁剪区域 ({crop_width_ocr}x{crop_height_ocr})", width=300)
+                    st.info(f"原图尺寸: {img.size}, 裁剪区域: ({left}, {top}) 到 ({right}, {bottom})")
+
+                except Exception as e:
+                    st.error(f"测试失败: {e}")
+            else:
+                st.warning("没有找到图片文件进行测试")
+        else:
+            st.error("请先输入有效的文件夹路径")
 
     # 处理按钮
     if st.button("🚀 开始OCR重命名", type="primary", key="ocr_rename"):
@@ -1295,8 +1361,8 @@ with tab7:
 
                         # 显示统计信息
                         success_count = len([r for r in results if "成功" in r['状态']])
-                        st.write(
-                            f"**OCR识别成功率**: {success_count}/{len(results)} ({success_count / len(results) * 100:.1f}%)")
+                        success_rate = (success_count / len(results)) * 100 if results else 0
+                        st.write(f"**OCR识别成功率**: {success_count}/{len(results)} ({success_rate:.1f}%)")
 
                         # 下载处理结果
                         output = BytesIO()
@@ -1317,7 +1383,6 @@ with tab7:
 
                 except Exception as e:
                     st.error(f"OCR重命名过程出错: {e}")
-                    st.info("💡 如果OCR识别效果不好，可以调整坐标参数或使用顺序重命名")
 # ------------------------ Footer ------------------------
 st.markdown("---")
 st.caption("说明：已默认启用统一请求配置（超时与证书策略）。若需将 VERIFY_SSL 设为 True，请修改文件顶部的常量并重启。")
