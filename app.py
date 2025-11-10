@@ -1194,68 +1194,130 @@ with tab7:
     st.subheader("🔤 图片OCR重命名")
     st.success("✅ Tesseract v5.5.0 已就绪！")
 
-    # 输入参数
+    # 方法1：手动输入路径
+    st.write("### 方法1：手动输入路径")
+    folder_path_ocr = st.text_input(
+        "图片文件夹路径",
+        placeholder="例如: D:\\下载内容\\图片文件夹",
+        help="包含需要重命名的图片文件的文件夹完整路径"
+    )
+
+    # 方法2：使用目录选择器
+    st.write("### 方法2：选择文件夹")
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        if st.button("📁 浏览选择文件夹"):
+            root = tk.Tk()
+            root.withdraw()  # 隐藏主窗口
+            root.attributes('-topmost', True)  # 置顶
+
+            selected_folder = filedialog.askdirectory(
+                title="选择包含图片的文件夹"
+            )
+            if selected_folder:
+                folder_path_ocr = selected_folder
+                st.success(f"已选择文件夹: {selected_folder}")
+                st.text_input("选择的路径", value=selected_folder, key="selected_path")
+    except ImportError:
+        st.warning("无法使用图形化文件夹选择")
+
+    # 显示当前目录信息
+    st.info(f"当前工作目录: `{os.getcwd()}`")
+
+    # 检查路径是否存在
+    if folder_path_ocr:
+        if os.path.exists(folder_path_ocr):
+            # 显示文件夹内容
+            try:
+                files = os.listdir(folder_path_ocr)
+                image_files = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff'))]
+
+                if image_files:
+                    st.success(f"✅ 找到 {len(image_files)} 个图片文件")
+                    st.write("**文件夹中的图片文件:**")
+                    for i, img_file in enumerate(image_files[:10]):  # 显示前10个
+                        st.write(f"- {img_file}")
+                    if len(image_files) > 10:
+                        st.write(f"- ... 还有 {len(image_files) - 10} 个文件")
+                else:
+                    st.warning("⚠️ 文件夹中没有找到图片文件")
+                    st.write("支持的格式: .png, .jpg, .jpeg, .bmp, .tiff")
+
+            except PermissionError:
+                st.error("❌ 没有权限访问该文件夹")
+            except Exception as e:
+                st.error(f"❌ 读取文件夹失败: {e}")
+        else:
+            st.error("❌ 文件夹路径不存在")
+
+    # OCR参数设置
+    st.write("### OCR参数设置")
     col1, col2 = st.columns(2)
     with col1:
-        folder_path_ocr = st.text_input(
-            "图片文件夹路径",
-            placeholder="例如: D:\\下载内容\\图片文件夹",
-            help="包含需要重命名的图片文件的文件夹路径"
-        )
-
         x_center_ocr = st.number_input("页码中心X坐标", value=788)
         crop_width_ocr = st.number_input("裁剪宽度(px)", value=200)
 
     with col2:
-        st.info("Tesseract v5.5.0 运行正常")
         y_center_ocr = st.number_input("页码中心Y坐标", value=1955)
         crop_height_ocr = st.number_input("裁剪高度(px)", value=50)
 
     # 处理按钮
     if st.button("🚀 开始OCR重命名", type="primary", key="ocr_rename"):
-        if not folder_path_ocr or not os.path.exists(folder_path_ocr):
-            st.error("请输入有效的图片文件夹路径")
+        if not folder_path_ocr:
+            st.error("❌ 请输入图片文件夹路径")
+        elif not os.path.exists(folder_path_ocr):
+            st.error("❌ 文件夹路径不存在，请检查路径是否正确")
         else:
-            try:
-                with st.spinner("正在OCR识别中..."):
-                    results, errors = ocr_rename_images(
-                        folder_path_ocr, x_center_ocr, y_center_ocr,
-                        crop_width_ocr, crop_height_ocr
-                    )
+            # 检查文件夹中是否有图片
+            files = os.listdir(folder_path_ocr)
+            image_files = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff'))]
 
-                # 显示处理结果
-                if results:
-                    st.success(f"✅ OCR重命名完成！成功处理 {len(results)} 个文件")
+            if not image_files:
+                st.error("❌ 文件夹中没有找到图片文件")
+            else:
+                try:
+                    with st.spinner(f"正在处理 {len(image_files)} 个图片文件..."):
+                        results, errors = ocr_rename_images(
+                            folder_path_ocr, x_center_ocr, y_center_ocr,
+                            crop_width_ocr, crop_height_ocr
+                        )
 
-                    # 显示结果表格
-                    st.subheader("📋 处理结果")
-                    results_df = pd.DataFrame(results)
-                    st.dataframe(results_df, use_container_width=True)
+                    # 显示处理结果
+                    if results:
+                        st.success(f"✅ OCR重命名完成！成功处理 {len(results)} 个文件")
 
-                    # 显示统计信息
-                    success_count = len([r for r in results if "成功" in r['状态']])
-                    st.write(
-                        f"**OCR识别成功率**: {success_count}/{len(results)} ({success_count / len(results) * 100:.1f}%)")
+                        # 显示结果表格
+                        st.subheader("📋 处理结果")
+                        results_df = pd.DataFrame(results)
+                        st.dataframe(results_df, use_container_width=True)
 
-                    # 下载处理结果
-                    output = BytesIO()
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        results_df.to_excel(writer, index=False, sheet_name='OCR重命名结果')
+                        # 显示统计信息
+                        success_count = len([r for r in results if "成功" in r['状态']])
+                        st.write(
+                            f"**OCR识别成功率**: {success_count}/{len(results)} ({success_count / len(results) * 100:.1f}%)")
 
-                    st.download_button(
-                        label="📥 下载处理报告Excel",
-                        data=output.getvalue(),
-                        file_name="OCR重命名报告.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+                        # 下载处理结果
+                        output = BytesIO()
+                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                            results_df.to_excel(writer, index=False, sheet_name='OCR重命名结果')
 
-                if errors:
-                    st.warning(f"有 {len(errors)} 个文件处理失败")
-                    for error in errors[:3]:  # 只显示前3个错误
-                        st.error(error)
+                        st.download_button(
+                            label="📥 下载处理报告Excel",
+                            data=output.getvalue(),
+                            file_name="OCR重命名报告.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
 
-            except Exception as e:
-                st.error(f"OCR重命名过程出错: {e}")
+                    if errors:
+                        st.warning(f"有 {len(errors)} 个文件处理失败")
+                        for error in errors[:3]:  # 只显示前3个错误
+                            st.error(error)
+
+                except Exception as e:
+                    st.error(f"OCR重命名过程出错: {e}")
+                    st.info("💡 如果OCR识别效果不好，可以调整坐标参数或使用顺序重命名")
 # ------------------------ Footer ------------------------
 st.markdown("---")
 st.caption("说明：已默认启用统一请求配置（超时与证书策略）。若需将 VERIFY_SSL 设为 True，请修改文件顶部的常量并重启。")
