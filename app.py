@@ -1204,7 +1204,8 @@ with tab7:
         "图片文件夹完整路径",
         value=default_path,
         placeholder="例如: C:\\Users\\18340\\Desktop\\111",
-        help="请输入完整的文件夹路径"
+        help="请输入完整的文件夹路径",
+        key="folder_path_input"  # 添加唯一的key
     )
 
     # 实时路径验证
@@ -1233,12 +1234,12 @@ with tab7:
                         # 显示统计信息
                         col1, col2, col3 = st.columns(3)
                         with col1:
-                            st.metric("总图片数", len(image_files))
+                            st.metric("总图片数", len(image_files), key="total_images")
                         with col2:
-                            st.metric("文件类型", len(file_stats))
+                            st.metric("文件类型", len(file_stats), key="file_types")
                         with col3:
                             total_size = sum(os.path.getsize(os.path.join(folder_path_ocr, f)) for f in image_files)
-                            st.metric("总大小", f"{total_size / 1024 / 1024:.1f} MB")
+                            st.metric("总大小", f"{total_size / 1024 / 1024:.1f} MB", key="total_size")
 
                         # 显示文件格式分布
                         if file_stats:
@@ -1299,21 +1300,37 @@ with tab7:
     # OCR参数设置
     st.write("### ⚙️ OCR参数设置")
 
-    # 坐标设置
+    # 坐标设置 - 使用唯一的key
     col1, col2 = st.columns(2)
     with col1:
         st.write("**坐标设置**")
-        x_center_ocr = st.number_input("页码中心X坐标", value=788,
-                                       help="距离图片左边的像素数", key="x_center")
-        crop_width_ocr = st.number_input("裁剪宽度(px)", value=200,
-                                         help="水平裁剪区域宽度", key="crop_width")
+        x_center_ocr = st.number_input(
+            "页码中心X坐标",
+            value=788,
+            help="距离图片左边的像素数",
+            key="x_center_ocr_main"  # 唯一key
+        )
+        crop_width_ocr = st.number_input(
+            "裁剪宽度(px)",
+            value=200,
+            help="水平裁剪区域宽度",
+            key="crop_width_ocr_main"  # 唯一key
+        )
 
     with col2:
         st.write("**尺寸设置**")
-        y_center_ocr = st.number_input("页码中心Y坐标", value=1955,
-                                       help="距离图片顶部的像素数", key="y_center")
-        crop_height_ocr = st.number_input("裁剪高度(px)", value=50,
-                                          help="垂直裁剪区域高度", key="crop_height")
+        y_center_ocr = st.number_input(
+            "页码中心Y坐标",
+            value=1955,
+            help="距离图片顶部的像素数",
+            key="y_center_ocr_main"  # 唯一key
+        )
+        crop_height_ocr = st.number_input(
+            "裁剪高度(px)",
+            value=50,
+            help="垂直裁剪区域高度",
+            key="crop_height_ocr_main"  # 唯一key
+        )
 
     # 高级选项
     with st.expander("🔧 高级选项", expanded=False):
@@ -1322,17 +1339,22 @@ with tab7:
             "页面分割模式",
             options=[6, 7, 8, 13],
             index=1,
-            help="7: 单行文本, 6: 统一块, 8: 单词, 13: 原始行"
+            help="7: 单行文本, 6: 统一块, 8: 单词, 13: 原始行",
+            key="ocr_psm_select"  # 唯一key
         )
 
-        enable_debug = st.checkbox("启用调试模式", value=True,
-                                   help="显示详细的处理信息和裁剪预览")
+        enable_debug = st.checkbox(
+            "启用调试模式",
+            value=True,
+            help="显示详细的处理信息和裁剪预览",
+            key="enable_debug_check"  # 唯一key
+        )
 
     # 测试功能
     if folder_path_ocr and os.path.exists(folder_path_ocr):
         st.write("### 🎯 测试功能")
 
-        if st.button("🔍 测试当前坐标裁剪", key="test_crop"):
+        if st.button("🔍 测试当前坐标裁剪", key="test_crop_button"):
             image_files = [f for f in os.listdir(folder_path_ocr) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
             if image_files:
                 test_image_path = os.path.join(folder_path_ocr, image_files[0])
@@ -1398,7 +1420,7 @@ with tab7:
     # 主要处理按钮
     st.write("### 🚀 开始处理")
 
-    if st.button("开始OCR重命名", type="primary", key="ocr_rename_main"):
+    if st.button("开始OCR重命名", type="primary", key="ocr_rename_main_button"):
         if not folder_path_ocr:
             st.error("❌ 请输入图片文件夹路径")
         elif not os.path.exists(folder_path_ocr):
@@ -1428,11 +1450,11 @@ with tab7:
 
                         col1, col2, col3 = st.columns(3)
                         with col1:
-                            st.metric("总处理数", len(results))
+                            st.metric("总处理数", len(results), key="processed_total")
                         with col2:
-                            st.metric("OCR成功数", success_count)
+                            st.metric("OCR成功数", success_count, key="ocr_success")
                         with col3:
-                            st.metric("成功率", f"{success_rate:.1f}%")
+                            st.metric("成功率", f"{success_rate:.1f}%", key="success_rate")
 
                         # 显示结果表格
                         st.subheader("📋 处理详情")
@@ -1450,7 +1472,8 @@ with tab7:
                             data=output.getvalue(),
                             file_name=f"OCR重命名报告_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            type="primary"
+                            type="primary",
+                            key="download_report_button"
                         )
 
                     if errors:
