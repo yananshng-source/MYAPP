@@ -1194,299 +1194,159 @@ with tab7:
     st.subheader("🔤 图片OCR重命名")
     st.success("✅ Tesseract v5.5.0 已就绪！")
 
-    # 快速路径输入
-    st.write("### 📍 图片文件夹路径")
+    st.warning("⚠️ **注意：在云端环境中，请使用文件上传功能**")
 
-    # 默认使用你提供的路径
-    default_path = r"C:\Users\18340\Desktop\111"
-
-    folder_path_ocr = st.text_input(
-        "图片文件夹完整路径",
-        value=default_path,
-        placeholder="例如: C:\\Users\\18340\\Desktop\\111",
-        help="请输入完整的文件夹路径",
-        key="folder_path_input"  # 添加唯一的key
+    # 方法1：多文件上传
+    st.write("### 📤 上传图片文件")
+    uploaded_files = st.file_uploader(
+        "选择图片文件",
+        type=['png', 'jpg', 'jpeg', 'bmp', 'tiff'],
+        accept_multiple_files=True,
+        help="可以多选图片文件",
+        key="image_uploader"
     )
 
-    # 实时路径验证
-    if folder_path_ocr:
-        st.write("### 🔍 路径验证结果")
+    # 创建临时处理目录
+    temp_processing_dir = None
 
-        if os.path.exists(folder_path_ocr):
-            if os.path.isdir(folder_path_ocr):
-                st.success("✅ 文件夹路径有效")
+    if uploaded_files:
+        # 创建临时目录来处理文件
+        import tempfile
 
-                # 显示文件夹内容
+        temp_processing_dir = tempfile.mkdtemp()
+
+        st.success(f"✅ 已上传 {len(uploaded_files)} 个文件")
+
+        # 保存上传的文件到临时目录
+        saved_files = []
+        for i, uploaded_file in enumerate(uploaded_files):
+            file_path = os.path.join(temp_processing_dir, uploaded_file.name)
+            with open(file_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            saved_files.append(uploaded_file.name)
+
+        # 显示上传的文件列表
+        st.write("**已上传的文件:**")
+        for file_name in saved_files:
+            st.write(f"- {file_name}")
+
+        # 显示图片预览
+        st.write("### 👀 图片预览")
+        preview_cols = st.columns(3)
+        for i, uploaded_file in enumerate(uploaded_files[:6]):
+            col = preview_cols[i % 3]
+            with col:
                 try:
-                    files = os.listdir(folder_path_ocr)
-                    image_files = [f for f in files if
-                                   f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.gif'))]
-
-                    if image_files:
-                        st.success(f"✅ 找到 {len(image_files)} 个图片文件")
-
-                        # 创建文件统计
-                        file_stats = {}
-                        for img_file in image_files:
-                            ext = os.path.splitext(img_file)[1].lower()
-                            file_stats[ext] = file_stats.get(ext, 0) + 1
-
-                        # 显示统计信息
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("总图片数", len(image_files), key="total_images")
-                        with col2:
-                            st.metric("文件类型", len(file_stats), key="file_types")
-                        with col3:
-                            total_size = sum(os.path.getsize(os.path.join(folder_path_ocr, f)) for f in image_files)
-                            st.metric("总大小", f"{total_size / 1024 / 1024:.1f} MB", key="total_size")
-
-                        # 显示文件格式分布
-                        if file_stats:
-                            st.write("**文件格式分布:**")
-                            for ext, count in file_stats.items():
-                                st.write(f"- {ext}: {count} 个文件")
-
-                        # 显示文件列表（可折叠）
-                        with st.expander("📄 查看所有图片文件", expanded=False):
-                            for i, img_file in enumerate(image_files):
-                                file_path = os.path.join(folder_path_ocr, img_file)
-                                file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-                                st.write(f"{i + 1:02d}. `{img_file}` ({file_size / 1024:.1f} KB)")
-
-                        # 图片预览
-                        st.write("### 👀 图片预览")
-                        preview_images = image_files[:6]  # 预览前6张
-                        cols = st.columns(3)
-
-                        for i, img_file in enumerate(preview_images):
-                            col = cols[i % 3]
-                            with col:
-                                try:
-                                    img_path = os.path.join(folder_path_ocr, img_file)
-                                    img = Image.open(img_path)
-                                    # 调整预览大小
-                                    img.thumbnail((200, 200))
-                                    st.image(img, caption=img_file, use_column_width=True)
-
-                                    # 显示图片信息
-                                    st.caption(f"尺寸: {img.size} | 格式: {img.format}")
-                                except Exception as e:
-                                    st.error(f"预览失败: {img_file}")
-
-                    else:
-                        st.warning("⚠️ 文件夹中没有找到图片文件")
-                        st.info("""
-                        **支持的图片格式:**
-                        - .png, .jpg, .jpeg
-                        - .bmp, .tiff, .gif
-                        """)
-
-                except PermissionError:
-                    st.error("❌ 没有权限访问该文件夹")
+                    img = Image.open(uploaded_file)
+                    img.thumbnail((200, 200))
+                    st.image(img, caption=uploaded_file.name, use_column_width=True)
                 except Exception as e:
-                    st.error(f"❌ 读取文件夹失败: {e}")
-            else:
-                st.error("❌ 路径不是文件夹，而是一个文件")
-        else:
-            st.error("❌ 文件夹路径不存在")
-            st.info("""
-            **建议检查:**
-            1. 路径拼写是否正确
-            2. 文件夹是否被移动或删除
-            3. 是否有访问权限
-            """)
+                    st.error(f"预览失败: {uploaded_file.name}")
 
     # OCR参数设置
     st.write("### ⚙️ OCR参数设置")
 
-    # 坐标设置 - 使用唯一的key
     col1, col2 = st.columns(2)
     with col1:
-        st.write("**坐标设置**")
         x_center_ocr = st.number_input(
             "页码中心X坐标",
             value=788,
             help="距离图片左边的像素数",
-            key="x_center_ocr_main"  # 唯一key
+            key="x_center_param"
         )
         crop_width_ocr = st.number_input(
             "裁剪宽度(px)",
             value=200,
             help="水平裁剪区域宽度",
-            key="crop_width_ocr_main"  # 唯一key
+            key="crop_width_param"
         )
 
     with col2:
-        st.write("**尺寸设置**")
         y_center_ocr = st.number_input(
             "页码中心Y坐标",
             value=1955,
             help="距离图片顶部的像素数",
-            key="y_center_ocr_main"  # 唯一key
+            key="y_center_param"
         )
         crop_height_ocr = st.number_input(
             "裁剪高度(px)",
             value=50,
             help="垂直裁剪区域高度",
-            key="crop_height_ocr_main"  # 唯一key
+            key="crop_height_param"
         )
 
-    # 高级选项
-    with st.expander("🔧 高级选项", expanded=False):
-        st.write("**OCR配置**")
-        ocr_psm = st.selectbox(
-            "页面分割模式",
-            options=[6, 7, 8, 13],
-            index=1,
-            help="7: 单行文本, 6: 统一块, 8: 单词, 13: 原始行",
-            key="ocr_psm_select"  # 唯一key
-        )
+    # 处理按钮
+    if uploaded_files:
+        if st.button("🚀 开始OCR重命名", type="primary", key="process_uploaded_files"):
+            try:
+                with st.spinner(f"正在处理 {len(uploaded_files)} 个图片文件..."):
+                    # 使用临时目录进行处理
+                    results, errors = ocr_rename_images(
+                        temp_processing_dir,
+                        x_center_ocr, y_center_ocr,
+                        crop_width_ocr, crop_height_ocr
+                    )
 
-        enable_debug = st.checkbox(
-            "启用调试模式",
-            value=True,
-            help="显示详细的处理信息和裁剪预览",
-            key="enable_debug_check"  # 唯一key
-        )
+                # 显示处理结果
+                if results:
+                    st.success(f"✅ OCR重命名完成！成功处理 {len(results)} 个文件")
 
-    # 测试功能
-    if folder_path_ocr and os.path.exists(folder_path_ocr):
-        st.write("### 🎯 测试功能")
+                    # 创建下载包
+                    st.subheader("📥 下载结果")
 
-        if st.button("🔍 测试当前坐标裁剪", key="test_crop_button"):
-            image_files = [f for f in os.listdir(folder_path_ocr) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-            if image_files:
-                test_image_path = os.path.join(folder_path_ocr, image_files[0])
-                try:
-                    img = Image.open(test_image_path)
+                    # 创建ZIP文件包含重命名后的图片
+                    zip_buffer = BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                        for result in results:
+                            old_path = os.path.join(temp_processing_dir, result['原文件名'])
+                            new_path = os.path.join(temp_processing_dir, result['新文件名'])
+                            if os.path.exists(new_path):
+                                zip_file.write(new_path, result['新文件名'])
 
-                    # 计算裁剪区域
-                    left = max(0, x_center_ocr - crop_width_ocr // 2)
-                    right = min(img.width, x_center_ocr + crop_width_ocr // 2)
-                    top = max(0, y_center_ocr - crop_height_ocr // 2)
-                    bottom = min(img.height, y_center_ocr + crop_height_ocr // 2)
+                    zip_buffer.seek(0)
 
-                    # 裁剪和预处理
-                    crop_img = img.crop((left, top, right, bottom))
-                    crop_img_large = crop_img.resize((crop_img.width * 2, crop_img.height * 2), Image.LANCZOS)
+                    # 下载ZIP文件
+                    st.download_button(
+                        label="📦 下载重命名后的图片(ZIP)",
+                        data=zip_buffer.getvalue(),
+                        file_name="重命名后的图片.zip",
+                        mime="application/zip",
+                        key="download_zip"
+                    )
 
-                    # 图像增强用于OCR
-                    gray = ImageOps.grayscale(crop_img_large)
-                    gray = ImageEnhance.Contrast(gray).enhance(3.0)
-                    bw = gray.point(lambda x: 0 if x < 128 else 255, '1')
+                    # 显示处理报告
+                    st.subheader("📋 处理报告")
+                    results_df = pd.DataFrame(results)
+                    st.dataframe(results_df, use_container_width=True)
 
-                    # 尝试OCR识别
-                    try:
-                        text = pytesseract.image_to_string(bw,
-                                                           config=f'--psm {ocr_psm} -c tessedit_char_whitelist=0123456789')
-                        ocr_result = text.strip()
-                        matches = re.findall(r'\d+', text)
-                    except Exception as ocr_error:
-                        ocr_result = f"OCR测试失败: {ocr_error}"
-                        matches = []
+                    # 下载Excel报告
+                    excel_buffer = BytesIO()
+                    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                        results_df.to_excel(writer, index=False, sheet_name='OCR重命名结果')
 
-                    # 显示测试结果
-                    col1, col2, col3 = st.columns(3)
+                    st.download_button(
+                        label="📊 下载处理报告(Excel)",
+                        data=excel_buffer.getvalue(),
+                        file_name="OCR处理报告.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_excel"
+                    )
 
-                    with col1:
-                        st.write("**原图预览**")
-                        st.image(img, caption=f"原图尺寸: {img.size}", use_column_width=True)
+                if errors:
+                    st.warning(f"有 {len(errors)} 个文件处理失败")
+                    for error in errors[:3]:
+                        st.error(error)
 
-                    with col2:
-                        st.write("**裁剪区域**")
-                        st.image(crop_img, caption=f"裁剪区域: {crop_img.size}", use_column_width=True)
+            except Exception as e:
+                st.error(f"处理过程出错: {e}")
 
-                    with col3:
-                        st.write("**OCR预处理**")
-                        st.image(bw, caption="二值化图像", use_column_width=True)
+    # 方法2：使用应用内的示例文件（备选方案）
+    st.write("---")
+    st.write("### 🎯 测试功能")
 
-                    # OCR结果
-                    st.write("**OCR测试结果:**")
-                    if matches:
-                        st.success(f"✅ 识别到数字: {matches} → 使用: {matches[-1]}")
-                        st.write(f"原始识别文本: `{ocr_result}`")
-                    else:
-                        st.warning(f"⚠️ 未识别到数字")
-                        st.write(f"识别文本: `{ocr_result}`")
-
-                    st.info(f"裁剪坐标: ({left}, {top}) 到 ({right}, {bottom})")
-
-                except Exception as e:
-                    st.error(f"测试失败: {e}")
-            else:
-                st.warning("没有找到图片文件进行测试")
-
-    # 主要处理按钮
-    st.write("### 🚀 开始处理")
-
-    if st.button("开始OCR重命名", type="primary", key="ocr_rename_main_button"):
-        if not folder_path_ocr:
-            st.error("❌ 请输入图片文件夹路径")
-        elif not os.path.exists(folder_path_ocr):
-            st.error("❌ 文件夹路径不存在")
-        else:
-            # 检查文件夹中是否有图片
-            files = os.listdir(folder_path_ocr)
-            image_files = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff'))]
-
-            if not image_files:
-                st.error("❌ 文件夹中没有找到图片文件")
-            else:
-                try:
-                    with st.spinner(f"正在处理 {len(image_files)} 个图片文件..."):
-                        results, errors = ocr_rename_images(
-                            folder_path_ocr, x_center_ocr, y_center_ocr,
-                            crop_width_ocr, crop_height_ocr
-                        )
-
-                    # 显示处理结果
-                    if results:
-                        st.success(f"✅ OCR重命名完成！成功处理 {len(results)} 个文件")
-
-                        # 显示统计信息
-                        success_count = len([r for r in results if "成功" in r['状态']])
-                        success_rate = (success_count / len(results)) * 100 if results else 0
-
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("总处理数", len(results), key="processed_total")
-                        with col2:
-                            st.metric("OCR成功数", success_count, key="ocr_success")
-                        with col3:
-                            st.metric("成功率", f"{success_rate:.1f}%", key="success_rate")
-
-                        # 显示结果表格
-                        st.subheader("📋 处理详情")
-                        results_df = pd.DataFrame(results)
-                        st.dataframe(results_df, use_container_width=True)
-
-                        # 下载处理结果
-                        st.subheader("📥 下载结果")
-                        output = BytesIO()
-                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                            results_df.to_excel(writer, index=False, sheet_name='OCR重命名结果')
-
-                        st.download_button(
-                            label="📥 下载处理报告Excel",
-                            data=output.getvalue(),
-                            file_name=f"OCR重命名报告_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            type="primary",
-                            key="download_report_button"
-                        )
-
-                    if errors:
-                        st.warning(f"有 {len(errors)} 个文件处理失败")
-                        with st.expander("查看错误详情", expanded=False):
-                            for error in errors:
-                                st.error(error)
-
-                except Exception as e:
-                    st.error(f"OCR重命名过程出错: {e}")
-                    if enable_debug:
-                        with st.expander("错误详情", expanded=False):
-                            st.code(traceback.format_exc())
+    if st.button("🧪 使用测试图片", key="use_test_images"):
+        st.info("测试功能：使用内置示例验证OCR功能")
+        # 这里可以添加使用内置测试图片的逻辑
 # ------------------------ Footer ------------------------
 st.markdown("---")
 st.caption("说明：已默认启用统一请求配置（超时与证书策略）。若需将 VERIFY_SSL 设为 True，请修改文件顶部的常量并重启。")
