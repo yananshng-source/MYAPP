@@ -745,45 +745,173 @@ with tab3:
 with tab4:
     st.header("🎓 招生计划 & 分数表 智能匹配工具")
 
+    # ================= 匹配配置 =================
     MATCH_KEYS = ["学校", "省份", "科类", "层次", "批次", "招生类型", "专业"]
-    DISPLAY_FIELDS = ["学校", "省份", "科类", "批次", "专业", "备注", "招生类型"]
+
+    # ⚠ 只用于【人工重复匹配区】候选项展示
+    DISPLAY_FIELDS = [
+        "学校",
+        "省份",
+        "科类",
+        "批次",
+        "专业",
+        "备注",
+        "招生类型"
+    ]
+
     TEXT_COLUMNS = {"专业组代码", "招生代码", "专业代码"}
 
 
-    def normalize(df):
+    # ================= 工具函数 =================
+    # ================= 工具函数 =================
+    def normalize(df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         for col in MATCH_KEYS:
             if col in df.columns:
                 df[col + "_norm"] = (
-                    df[col].fillna("").astype(str)
-                    .str.strip().str.replace("\u3000", "").str.lower()
+                    df[col]
+                    .fillna("")  # ⭐ 填充空值
+                    .astype(str)  # ⭐ 强制转为字符串
+                    .str.strip()
+                    .str.replace("\u3000", "")
+                    .str.lower()
                 )
+
         if "层次_norm" in df.columns:
-            df["层次_norm"] = df["层次_norm"].replace({"专科": "专科(高职)"})
+            df["层次_norm"] = df["层次_norm"].replace({
+                "专科": "专科(高职)"
+            })
+
         return df
 
 
-    def build_key(df):
-        cols = [c + "_norm" for c in MATCH_KEYS if c + "_norm" in df.columns]
-        if not cols:
+    def build_key(df: pd.DataFrame) -> pd.Series:
+        norm_cols = [c + "_norm" for c in MATCH_KEYS if c + "_norm" in df.columns]
+        if not norm_cols:  # ⚠ 兜底：如果没有_norm列
             return pd.Series([""] * len(df), index=df.index)
-        return df[cols].agg("||".join, axis=1)
+        return df[norm_cols].fillna("").astype(str).agg("||".join, axis=1)
+
+
+    def safe_text(v):
+        return str(v) if pd.notna(v) and str(v).strip() else ""
 
 
     def clean_code_text(v):
         if pd.isna(v):
             return ""
         s = str(v).strip()
-        return s[1:] if s.startswith("^") else s
+        if s.startswith("^"):
+            s = s[1:]
+        return s
 
 
-    def calc_first_subject(kl):
-        if "历史" in str(kl): return "历"
-        if "物理" in str(kl): return "物"
+    # ================= 选科解析 =================
+    def calc_first_subject(kl: str) -> str:
+        if not isinstance(kl, str):
+            return ""
+        if "历史" in kl:
+            return "历"
+        if "物理" in kl:
+            return "物"
         return ""
 
 
-    def merge_plan_score(plan_row, score_row):
+    def parse_subject_requirement(require_text: str, kl: str) -> tuple[str, str]:
+        # ===== 兜底方案（核心修改点 1）=====
+        # 原字段为空 / NaN / 空白 / nan字符串 → 绝对不生成选科结果
+        if require_text is None:
+            return "", ""
+
+        s = str(require_text).strip()
+
+        if s == "" or s.lower() in {"nan", "none"}:
+            return "", ""
+
+        # ===== 原有逻辑，完全保留 =====
+        if "文科" in kl or "理科" in kl:
+            return "", ""
+
+        text = (
+            s.replace(" ", "")
+            .replace("　", "")
+            .replace("，", "")
+            .replace(",", "")
+            .replace("、", "")
+
+        )
+        subject_map = {
+            "思想政治": "政",
+            "政治": "政",
+            "政": "政",
+
+            "物理": "物",
+            "物": "物",
+
+            "历史": "历",
+            "历": "历",
+
+            "化学": "化",
+            "化": "化",
+
+            "生物": "生",
+            "生": "生",
+
+            "地理": "地",
+            "地": "地",
+        }
+
+        def extract_all(s: str) -> str:
+            res = []
+            for k, v in subject_map.items():
+                if k in s and v not in res:
+                    res.append(v)
+            return "".join(res)
+
+        def extract_after_reselect(s: str) -> str:
+            if "再选" in s:
+                s = s.split("再选", 1)[1]
+            return extract_all(s)
+
+        if "不限" in text:
+            return "不限科目专业组", ""
+
+        must_keywords = ["必选", "均需", "全部", "全选", "均须", "3科必选"]
+        multi_keywords = ["或", "/", "任选", "选一", "至少", "其中", "之一"]
+
+        is_must = any(k in text for k in must_keywords)
+        is_multi = any(k in text for k in multi_keywords)
+
+        req_type = "多门选考" if is_multi else "单科、多科均需选考"
+
+        # 一律先抽取全部科目
+        second = extract_all(text)
+
+        # ⭐ 核心规则：只要是物理 / 历史类，必须剔除首选
+        if "物理" in kl:
+            second = second.replace("物", "")
+        elif "历史" in kl:
+            second = second.replace("历", "")
+
+        return req_type, second
+
+
+    # ================= 核心合并 =================
+    def merge_plan_score(plan_row: pd.Series, score_row: pd.Series) -> dict:
+        # ===== 兜底方案（核心修改点 2，双保险）=====
+        raw_req = plan_row.get("专业选科要求(新高考专业省份)", "")
+
+        if not isinstance(raw_req, str) or not raw_req.strip():
+            select_req, second_req = "", ""
+        else:
+            select_req, second_req = parse_subject_requirement(
+                raw_req,
+                plan_row.get("科类", "")
+            )
+
+        enroll_count = score_row.get("招生人数", "")
+        if pd.isna(enroll_count) or enroll_count == "":
+            enroll_count = plan_row.get("招生人数", "")
+
         level = plan_row.get("层次", "")
         if level == "专科":
             level = "专科(高职)"
@@ -802,83 +930,226 @@ with tab4:
             "最低分": score_row.get("最低分", ""),
             "平均分": score_row.get("平均分", ""),
             "最低分位次": score_row.get("最低分位次", ""),
-            "招生人数": score_row.get("招生人数", ""),
+            "招生人数": enroll_count,
             "专业组代码": clean_code_text(plan_row.get("专业组代码", "")),
             "首选科目": calc_first_subject(plan_row.get("科类", "")),
-            "选科要求": "",
-            "次选科目": "",
+            "选科要求": select_req,
+            "次选": second_req,
             "专业代码": clean_code_text(plan_row.get("专业代码", "")),
             "招生代码": clean_code_text(plan_row.get("招生代码", "")),
             "录取人数": score_row.get("录取人数", ""),
         }
 
 
-    st.subheader("📥 分数表模板下载")
-    tpl_cols = [
+    def diff_fields(df: pd.DataFrame, fields: list[str]) -> set[str]:
+        diffs = set()
+        for f in fields:
+            if f in df.columns and df[f].nunique(dropna=False) > 1:
+                diffs.add(f)
+        return diffs
+
+
+    def clear_cache():
+        st.session_state.chosen = {}
+        st.session_state.expanded = {}
+
+
+    # ================= 分数表模板下载 =================
+    st.subheader("📥 分数表导入模板")
+
+    template_cols = [
         "学校", "省份", "科类", "层次", "批次", "专业", "备注", "招生类型",
         "最高分", "最低分", "平均分", "最低分位次", "招生人数", "录取人数"
     ]
+
+    template_df = pd.DataFrame(columns=template_cols)
     buf = BytesIO()
-    pd.DataFrame(columns=tpl_cols).to_excel(buf, index=False)
+    template_df.to_excel(buf, index=False)
     buf.seek(0)
-    st.download_button("⬇ 下载分数表模板", buf, "分数表导入模板.xlsx")
 
+    st.download_button(
+        "⬇ 下载【分数表】Excel模板",
+        data=buf,
+        file_name="分数表导入模板.xlsx"
+    )
+
+    # ================= 数据上传 =================
     st.subheader("📂 数据导入")
-    plan_file = st.file_uploader("📘 计划表", type=["xls", "xlsx"])
-    score_file = st.file_uploader("📙 分数表", type=["xls", "xlsx"])
 
-    if plan_file and score_file:
-        plan_df = normalize(pd.read_excel(plan_file))
-        score_df = normalize(pd.read_excel(score_file))
+    plan_file = st.file_uploader("📘 上传【计划表】Excel", type=["xls", "xlsx"])
+    score_file = st.file_uploader("📙 上传【分数表】Excel", type=["xls", "xlsx"])
 
-        plan_df["_key"] = build_key(plan_df)
-        score_df["_key"] = build_key(score_df)
-        score_groups = score_df.groupby("_key")
+    if not plan_file or not score_file:
+        st.info("请先上传【计划表】和【分数表】")
+        st.stop()
 
-        unique_rows, duplicate_rows, unmatched_rows = [], [], []
+    # ================= 读取数据 =================
+    plan_df = normalize(pd.read_excel(plan_file))
+    score_df = normalize(pd.read_excel(score_file))
 
-        for _, plan_row in plan_df.iterrows():
-            key = plan_row["_key"]
-            if key not in score_groups.groups:
-                unmatched_rows.append(plan_row)
-            else:
-                group = score_groups.get_group(key)
-                if len(group) == 1:
-                    unique_rows.append(merge_plan_score(plan_row, group.iloc[0]))
-                else:
-                    duplicate_rows.append((plan_row, group))
+    # ================= 选科要求字段清洗（仅此一列） =================
+    SUBJECT_COL = "专业选科要求(新高考专业省份)"
 
-        st.success(
-            f"✅ 唯一匹配 {len(unique_rows)} ｜ "
-            f"⚠ 重复匹配 {len(duplicate_rows)} ｜ "
-            f"❌ 未匹配 {len(unmatched_rows)}"
+    if SUBJECT_COL in plan_df.columns:
+        plan_df[SUBJECT_COL] = (
+            plan_df[SUBJECT_COL]
+            .astype(str)
+            .str.strip()
+            .str.replace(r"^\^", "", regex=True)  # ⭐ 关键：去掉开头 ^
+            .replace({"nan": "", "None": ""})
         )
 
-        final_rows = unique_rows.copy()
+    if "专业选科要求(新高考专业省份)" not in plan_df.columns:
+        plan_df["专业选科要求(新高考专业省份)"] = ""
 
-        for plan_row, group in duplicate_rows:
-            final_rows.append(
-                merge_plan_score(plan_row, group.iloc[0])
-            )
+    for k in MATCH_KEYS:
+        if k not in plan_df.columns:
+            st.error(f"❌ 计划表缺少字段：{k}")
+            st.stop()
+        if k not in score_df.columns:
+            st.error(f"❌ 分数表缺少字段：{k}")
+            st.stop()
+
+    plan_df["_key"] = build_key(plan_df)
+    score_df["_key"] = build_key(score_df)
+    score_groups = score_df.groupby("_key")
+
+    # ================= 匹配 =================
+    unique_rows = []
+    duplicate_rows = []
+    unmatched_rows = []
+
+    for _, plan_row in plan_df.iterrows():
+        key = plan_row["_key"]
+        if key not in score_groups.groups:
+            unmatched_rows.append(plan_row)
+        else:
+            group = score_groups.get_group(key)
+            if len(group) == 1:
+                unique_rows.append(merge_plan_score(plan_row, group.iloc[0]))
+            else:
+                duplicate_rows.append((plan_row, group))
+
+    # ================= 统计 =================
+    st.success(
+        f"✅ 唯一匹配：{len(unique_rows)} 条 ｜ "
+        f"⚠ 重复匹配：{len(duplicate_rows)} 条 ｜ "
+        f"❌ 未匹配：{len(unmatched_rows)} 条"
+    )
+
+    # ================= Session State =================
+    if "chosen" not in st.session_state:
+        st.session_state.chosen = {}
+    if "expanded" not in st.session_state:
+        st.session_state.expanded = {}
+
+    # ================= 重复匹配 =================
+    st.header("⚠ 重复匹配人工确认区")
+
+    total_dup = len(duplicate_rows)
+    confirmed = len(st.session_state.chosen)
+    progress = 1.0 if total_dup == 0 else confirmed / total_dup
+
+    st.progress(progress)
+    st.caption(f"已确认 {confirmed} / {total_dup} 条（{int(progress * 100)}%）")
+
+    for i, (plan_row, candidates) in enumerate(duplicate_rows):
+        title = (
+            f"{i + 1}. "
+            f"{plan_row.get('学校', '')} | "
+            f"{plan_row.get('省份', '')} | "
+            f"{plan_row.get('科类', '')} | "
+            f"{plan_row.get('批次', '')} | "
+            f"{plan_row.get('专业', '')} | "
+            f"{safe_text(plan_row.get('备注', ''))} | "
+            f"{safe_text(plan_row.get('招生类型', ''))}"
+        )
+
+        with st.expander(title, expanded=False):
+            if i in st.session_state.chosen:
+                st.success("✅ 已选择完成")
+                if st.button("🔁 重新选择", key=f"reset_{i}"):
+                    del st.session_state.chosen[i]
+                    st.rerun()
+            else:
+                options = [
+                    (None, "请选择对应的分数记录"),
+                    ("NO_SCORE", "🚫 无对应分数（保留计划，不填分数）")
+                ]
+
+                diff_cols = diff_fields(candidates, DISPLAY_FIELDS)
+
+                for idx, r in candidates.iterrows():
+                    info = []
+                    for col in DISPLAY_FIELDS:
+                        if col in r and pd.notna(r[col]):
+                            if col in diff_cols:
+                                info.append(f"🔴【{col}】{r[col]}")
+                            else:
+                                info.append(f"{col}:{r[col]}")
+                    options.append((idx, " | ".join(info)))
+
+                selected = st.radio(
+                    "请选择对应的分数记录",
+                    options=options,
+                    format_func=lambda x: x[1],
+                    index=0,
+                    key=f"radio_{i}"
+                )
+
+                if selected[0] is not None:
+                    if st.button("✅ 确认本条选择", key=f"confirm_{i}"):
+                        st.session_state.chosen[i] = selected[0]
+                        st.rerun()
+
+    # ================= 导出 =================
+    st.header("📤 导出结果")
+
+    if st.button("🧹 手动清理缓存（重新开始匹配）"):
+        clear_cache()
+        st.success("缓存已清理")
+        st.rerun()
+
+    all_chosen = len(st.session_state.chosen) == len(duplicate_rows)
+
+    if st.button("📥 导出最终完整数据", disabled=not all_chosen):
+        final_rows = []
+        final_rows.extend(unique_rows)
+
+        for i, (plan_row, _) in enumerate(duplicate_rows):
+            score_idx = st.session_state.chosen[i]
+
+            if score_idx == "NO_SCORE":
+                score_row = {}
+            else:
+                score_row = score_df.loc[score_idx]
+
+            final_rows.append(merge_plan_score(plan_row, score_row))
 
         final_df = pd.DataFrame(final_rows)
+        unmatched_df = pd.DataFrame(unmatched_rows).drop(columns=["_key"], errors="ignore")
 
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            final_df.to_excel(writer, sheet_name="最终数据", index=False)
-            ws = writer.book["最终数据"]
-            for i, col in enumerate(final_df.columns, start=1):
-                if col in TEXT_COLUMNS:
-                    letter = get_column_letter(i)
-                    for r in range(2, ws.max_row + 1):
-                        ws[f"{letter}{r}"].number_format = "@"
+            final_df.to_excel(writer, sheet_name="最终完整数据", index=False)
+            unmatched_df.to_excel(writer, sheet_name="未匹配数据", index=False)
+
+            ws = writer.book["最终完整数据"]
+            for col_idx, col_name in enumerate(final_df.columns, start=1):
+                if col_name in TEXT_COLUMNS:
+                    col_letter = get_column_letter(col_idx)
+                    for row in range(2, ws.max_row + 1):
+                        ws[f"{col_letter}{row}"].number_format = "@"
 
         output.seek(0)
+
         st.download_button(
-            "📥 下载匹配结果",
-            output,
-            f"匹配结果_{uuid.uuid4().hex[:6]}.xlsx"
+            "⬇ 下载 Excel",
+            data=output,
+            file_name=f"匹配结果_{uuid.uuid4().hex[:6]}.xlsx"
         )
+
+        clear_cache()
 
     # =====================================================
     # ======================= TAB 5=======================
@@ -886,7 +1157,11 @@ with tab4:
 with tab5:
     st.header("📊 专业分 → 专业分-批量导入模板")
 
-    LEVEL_MAP = {"1": "本科(普通)", "2": "专科(高职)", "3": "本科(职业)"}
+    LEVEL_MAP = {
+        "1": "本科(普通)",
+        "2": "专科(高职)",
+        "3": "本科(职业)"
+    }
 
     GROUP_JOIN_PROVINCE = {
         "湖南", "福建", "广东", "北京", "黑龙江", "安徽", "江西", "广西",
@@ -900,8 +1175,9 @@ with tab5:
     FINAL_COLUMNS = [
         "学校名称", "省份", "招生专业", "专业方向（选填）", "专业备注（选填）",
         "一级层次", "招生科类", "招生批次", "招生类型（选填）",
-        "最高分", "最低分", "平均分", "最低分位次（选填）", "招生人数（选填）",
-        "数据来源", "专业组代码", "首选科目", "选科要求", "次选科目",
+        "最高分", "最低分", "平均分",
+        "最低分位次（选填）", "招生人数（选填）", "数据来源",
+        "专业组代码", "首选科目", "选科要求", "次选科目",
         "专业代码", "招生代码",
         "最低分数区间低", "最低分数区间高",
         "最低分数区间位次低", "最低分数区间位次高",
@@ -909,86 +1185,195 @@ with tab5:
     ]
 
 
+    # =========================
+    # 工具函数
+    # =========================
+    def to_float(x):
+        if pd.isna(x):
+            return None
+        s = str(x).strip()
+        if s == "" or s == "0":
+            return None
+        try:
+            return float(s)
+        except:
+            return None
+
+
+    def score_valid(row):
+        max_s = to_float(row["最高分"])
+        min_s = to_float(row["最低分"])
+        avg_s = to_float(row["平均分"])
+
+        checks = []
+
+        if max_s is not None and min_s is not None:
+            checks.append(max_s >= min_s)
+        if max_s is not None and avg_s is not None:
+            checks.append(max_s >= avg_s)
+        if avg_s is not None and min_s is not None:
+            checks.append(avg_s >= min_s)
+
+        return all(checks)
+
+
+    def convert_subject(x):
+        if x == "物理":
+            return "物理类", "物"
+        if x == "历史":
+            return "历史类", "历"
+        if x in {"文科", "理科", "综合"}:
+            return x, ""
+        return x, ""
+
+
+    def parse_requirement(req):
+        if pd.isna(req):
+            return "不限科目专业组", ""
+
+        req = str(req).strip()
+        if req == "" or req == "不限":
+            return "不限科目专业组", ""
+
+        # 次选科目：只保留科目本身
+        subjects = req.replace("且", "").replace("/", "")
+
+        # 物/化 → 多门选考
+        if "/" in req:
+            return "多门选考", subjects
+
+        # 物且化 / 单科
+        return "单科、多科均需选考", subjects
+
+
     def build_group_code(row):
         code = row["招生代码"]
         gid = row["专业组编号"]
         prov = row["省份"]
-        if prov in GROUP_JOIN_PROVINCE and pd.notna(gid):
+
+        if prov in GROUP_JOIN_PROVINCE and pd.notna(gid) and str(gid).strip() != "":
             return f"{code}（{gid}）"
         if prov in ONLY_CODE_PROVINCE:
             return code
         return ""
 
 
+    def to_excel(df):
+        buf = BytesIO()
+        df.to_excel(buf, index=False)
+        return buf.getvalue()
+
+
+    # =========================
+    # 文件上传
+    # =========================
     c1, c2, c3 = st.columns(3)
     with c1:
-        prof_file = st.file_uploader("📥 专业分源数据", type=["xls", "xlsx"])
+        prof_file = st.file_uploader("📥 上传【专业分（源数据）】", type=["xls", "xlsx"])
     with c2:
-        school_file = st.file_uploader("🏫 学校小范围数据", type=["xls", "xlsx"])
+        school_file = st.file_uploader("🏫 学校小范围数据导出", type=["xls", "xlsx"])
     with c3:
         major_file = st.file_uploader("📘 专业信息表", type=["xls", "xlsx"])
 
+    # =========================
+    # 主逻辑
+    # =========================
     if prof_file and school_file and major_file:
+
         df = pd.read_excel(prof_file, dtype=str)
         school_df = pd.read_excel(school_file, dtype=str)
         major_df = pd.read_excel(major_file, dtype=str)
 
-        # ===== 层次字段兜底处理 =====
-        if "层次" in df.columns:
-            df["一级层次"] = df["层次"].map(LEVEL_MAP)
-        elif "层次代码" in df.columns:
-            df["一级层次"] = df["层次代码"].map(LEVEL_MAP)
-        elif "学历层次" in df.columns:
-            df["一级层次"] = df["学历层次"].map(LEVEL_MAP)
-        else:
-            st.error(
-                "❌ 专业分源数据缺少【层次】字段。\n\n"
-                "请确认 Excel 中包含以下任一列名：\n"
-                "• 层次\n"
-                "• 层次代码\n"
-                "• 学历层次"
+        st.subheader("① 数据校验")
+
+        errors = []
+
+        # 校验1：学校名称
+        bad_school = df[~df["院校名称"].isin(set(school_df["学校名称"]))].copy()
+        if not bad_school.empty:
+            bad_school["错误原因"] = "学校名称不在学校小范围数据中"
+            errors.append(bad_school)
+
+        # 校验2：专业 + 一级层次
+        df["一级层次"] = df["层次"].map(LEVEL_MAP)
+        chk = df.merge(
+            major_df[["专业名称", "一级层次"]],
+            on=["专业名称", "一级层次"],
+            how="left",
+            indicator=True
+        )
+        bad_major = chk[chk["_merge"] == "left_only"].copy()
+        if not bad_major.empty:
+            bad_major["错误原因"] = "专业名称 + 一级层次 不存在"
+            errors.append(bad_major[df.columns.tolist() + ["错误原因"]])
+
+        # 校验3：分数
+        bad_score = df[~df.apply(score_valid, axis=1)].copy()
+        if not bad_score.empty:
+            bad_score["错误原因"] = "分数关系错误（最高/平均/最低）"
+            errors.append(bad_score)
+
+        if errors:
+            err_df = pd.concat(errors, ignore_index=True)
+            st.error(f"❌ 校验失败，共 {len(err_df)} 条")
+            st.dataframe(err_df)
+            st.download_button(
+                "📥 下载错误明细",
+                data=to_excel(err_df),
+                file_name="专业分-校验错误明细.xlsx"
             )
             st.stop()
 
+        st.success("✅ 校验通过")
+
+        # =========================
+        # 字段转换
+        # =========================
         out = pd.DataFrame()
+
         out["学校名称"] = df["院校名称"]
         out["省份"] = df["省份"]
         out["招生专业"] = df["专业名称"]
         out["专业方向（选填）"] = ""
         out["专业备注（选填）"] = df["专业备注"]
         out["一级层次"] = df["一级层次"]
-        out["招生科类"] = df["科类"]
+
+        out["招生科类"], out["首选科目"] = zip(*df["科类"].apply(convert_subject))
+
         out["招生批次"] = df["批次"]
         out["招生类型（选填）"] = df["招生类型"]
+
         out["最高分"] = df["最高分"]
         out["最低分"] = df["最低分"]
         out["平均分"] = df["平均分"]
+
         out["最低分位次（选填）"] = df["最低位次"]
         out["招生人数（选填）"] = df["招生计划人数"]
+
         out["数据来源"] = "学业桥"
         out["专业组代码"] = df.apply(build_group_code, axis=1)
-        out["首选科目"] = ""
-        out["选科要求"] = ""
-        out["次选科目"] = ""
+
+        out["选科要求"], out["次选科目"] = zip(*df["报考要求"].apply(parse_requirement))
+
         out["专业代码"] = df["专业代码"]
         out["招生代码"] = df["招生代码"]
+
         out["最低分数区间低"] = ""
         out["最低分数区间高"] = ""
         out["最低分数区间位次低"] = ""
         out["最低分数区间位次高"] = ""
+
         out["录取人数（选填）"] = df["录取人数"]
 
+        # 强制字段顺序
         out = out[FINAL_COLUMNS]
 
         st.dataframe(out.head(20))
 
-        buf = BytesIO()
-        out.to_excel(buf, index=False)
-        buf.seek(0)
         st.download_button(
             "📤 下载【专业分-批量导入模板】",
-            buf,
-            "专业分-批量导入模板.xlsx"
+            data=to_excel(out),
+            file_name="专业分-批量导入模板.xlsx"
         )
 
 
