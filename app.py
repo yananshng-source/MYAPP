@@ -975,14 +975,19 @@ with tab4:
     )
 
     # ================= 数据上传 =================
-    st.subheader("📂 数据导入")
+    st.info("此功能需要上传计划表和分数表。请使用上方上传控件。")
+    plan_file = st.file_uploader("📘 上传【计划表】Excel", type=["xls", "xlsx"], key="plan_file_4")
+    score_file = st.file_uploader("📙 上传【分数表】Excel", type=["xls", "xlsx"], key="score_file_4")
 
-    plan_file = st.file_uploader("📘 上传【计划表】Excel", type=["xls", "xlsx"])
-    score_file = st.file_uploader("📙 上传【分数表】Excel", type=["xls", "xlsx"])
-
-    if not plan_file or not score_file:
-        st.info("请先上传【计划表】和【分数表】")
-        st.stop()
+    if plan_file and score_file:
+        try:
+            plan_df = pd.read_excel(plan_file)
+            score_df = pd.read_excel(score_file)
+            st.success(f"✅ 成功读取数据！计划表: {len(plan_df)} 行，分数表: {len(score_df)} 行")
+            st.write("计划表预览:", plan_df.head())
+            st.write("分数表预览:", score_df.head())
+        except Exception as e:
+            st.error(f"读取文件出错: {e}")
 
     # ================= 读取数据 =================
     plan_df = normalize(pd.read_excel(plan_file))
