@@ -978,16 +978,17 @@ with tab4:
     plan_file = st.file_uploader("📘 上传【计划表】Excel", type=["xls", "xlsx"])
     score_file = st.file_uploader("📙 上传【分数表】Excel", type=["xls", "xlsx"])
 
-    if plan_file and score_file:
+    # ❌ 不再使用 st.stop()
+    if not plan_file or not score_file:
+        st.info("请先上传【计划表】和【分数表】")
+    else:
         try:
-            plan_df = pd.read_excel(BytesIO(plan_file.read()))
-            score_file.seek(0)  # 如果还要用 score_file.read() 再次读取，记得 seek(0)
-            score_df = pd.read_excel(BytesIO(score_file.read()))
-            st.success("✅ 文件读取成功")
+            plan_df = normalize(pd.read_excel(plan_file))
+            score_df = normalize(pd.read_excel(score_file))
         except Exception as e:
             st.error(f"读取 Excel 出错: {e}")
-    else:
-        st.info("请先上传【计划表】和【分数表】")
+            plan_df = pd.DataFrame()
+            score_df = pd.DataFrame()
 
     # ================= 读取数据 =================
     plan_df = normalize(pd.read_excel(plan_file))
@@ -1008,13 +1009,13 @@ with tab4:
     if "专业选科要求(新高考专业省份)" not in plan_df.columns:
         plan_df["专业选科要求(新高考专业省份)"] = ""
 
-    for k in MATCH_KEYS:
-        if k not in plan_df.columns:
-            st.error(f"❌ 计划表缺少字段：{k}")
-            st.stop()
-        if k not in score_df.columns:
-            st.error(f"❌ 分数表缺少字段：{k}")
-            st.stop()
+    missing_fields_plan = [k for k in MATCH_KEYS if k not in plan_df.columns]
+    missing_fields_score = [k for k in MATCH_KEYS if k not in score_df.columns]
+
+    if missing_fields_plan:
+        st.warning(f"❌ 计划表缺少字段: {missing_fields_plan}")
+    if missing_fields_score:
+        st.warning(f"❌ 分数表缺少字段: {missing_fields_score}")
 
     plan_df["_key"] = build_key(plan_df)
     score_df["_key"] = build_key(score_df)
