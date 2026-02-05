@@ -5,4 +5,3 @@ streamlit
 requests
 beautifulsoup4
 Pillow
-pytesseract
