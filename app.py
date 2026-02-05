@@ -980,12 +980,12 @@ with tab4:
 
     if plan_file and score_file:
         try:
-            plan_df = normalize(pd.read_excel(plan_file))
-            score_df = normalize(pd.read_excel(score_file))
-            st.success("✅ 文件上传成功，开始匹配...")
-            # ... 匹配、统计、下载逻辑
+            plan_df = pd.read_excel(BytesIO(plan_file.read()))
+            score_file.seek(0)  # 如果还要用 score_file.read() 再次读取，记得 seek(0)
+            score_df = pd.read_excel(BytesIO(score_file.read()))
+            st.success("✅ 文件读取成功")
         except Exception as e:
-            st.error(f"读取文件失败: {e}")
+            st.error(f"读取 Excel 出错: {e}")
     else:
         st.info("请先上传【计划表】和【分数表】")
 
