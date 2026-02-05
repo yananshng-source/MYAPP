@@ -739,10 +739,9 @@ with tab3:
         except Exception as e:
             log(f"读取上传文件失败: {e}", level="error")
             st.error("无法读取上传的 Excel 文件")
-
-    # =====================================================
-    # ======================= TAB 4 =======================
-    # =====================================================
+# =====================================================
+# ======================= TAB 4 =======================
+# =====================================================
 with tab4:
     st.header("🎓 招生计划 & 分数表 智能匹配工具")
 
@@ -761,6 +760,7 @@ with tab4:
     ]
 
     TEXT_COLUMNS = {"专业组代码", "招生代码", "专业代码"}
+
 
     # ================= 工具函数 =================
     def normalize(df: pd.DataFrame) -> pd.DataFrame:
@@ -977,187 +977,195 @@ with tab4:
     plan_file = st.file_uploader("📘 上传【计划表】Excel", type=["xls", "xlsx"], key="plan_file_4")
     score_file = st.file_uploader("📙 上传【分数表】Excel", type=["xls", "xlsx"], key="score_file_4")
 
-    if plan_file and score_file:
-        try:
-            plan_df = pd.read_excel(plan_file)
-            score_df = pd.read_excel(score_file)
-            st.success(f"✅ 成功读取数据！计划表: {len(plan_df)} 行，分数表: {len(score_df)} 行")
-            plan_df = normalize(pd.read_excel(plan_file))
-            score_df = normalize(pd.read_excel(score_file))
-            st.write("计划表预览:", plan_df.head())
-            st.write("分数表预览:", score_df.head())
-        except Exception as e:
-            st.error(f"读取文件出错: {e}")
-
-    # ================= 读取数据 =================
-
-
-    # ================= 选科要求字段清洗（仅此一列） =================
-    SUBJECT_COL = "专业选科要求(新高考专业省份)"
-
-    if SUBJECT_COL in plan_df.columns:
-        plan_df[SUBJECT_COL] = (
-            plan_df[SUBJECT_COL]
-            .astype(str)
-            .str.strip()
-            .str.replace(r"^\^", "", regex=True)  # ⭐ 关键：去掉开头 ^
-            .replace({"nan": "", "None": ""})
-        )
-
-    if "专业选科要求(新高考专业省份)" not in plan_df.columns:
-        plan_df["专业选科要求(新高考专业省份)"] = ""
-
-    for k in MATCH_KEYS:
-        if k not in plan_df.columns:
-            st.error(f"❌ 计划表缺少字段：{k}")
-            st.stop()
-        if k not in score_df.columns:
-            st.error(f"❌ 分数表缺少字段：{k}")
-            st.stop()
-
-    plan_df["_key"] = build_key(plan_df)
-    score_df["_key"] = build_key(score_df)
-    score_groups = score_df.groupby("_key")
-
-    # ================= 匹配 =================
-    unique_rows = []
-    duplicate_rows = []
-    unmatched_rows = []
-
-    for _, plan_row in plan_df.iterrows():
-        key = plan_row["_key"]
-        if key not in score_groups.groups:
-            unmatched_rows.append(plan_row)
-        else:
-            group = score_groups.get_group(key)
-            if len(group) == 1:
-                unique_rows.append(merge_plan_score(plan_row, group.iloc[0]))
-            else:
-                duplicate_rows.append((plan_row, group))
-
-    # ================= 统计 =================
-    st.success(
-        f"✅ 唯一匹配：{len(unique_rows)} 条 ｜ "
-        f"⚠ 重复匹配：{len(duplicate_rows)} 条 ｜ "
-        f"❌ 未匹配：{len(unmatched_rows)} 条"
-    )
-
-    # ================= Session State =================
+    # 初始化session state
     if "chosen" not in st.session_state:
         st.session_state.chosen = {}
     if "expanded" not in st.session_state:
         st.session_state.expanded = {}
 
-    # ================= 重复匹配 =================
-    st.header("⚠ 重复匹配人工确认区")
+    if plan_file and score_file:
+        try:
+            # 读取原始数据
+            raw_plan_df = pd.read_excel(plan_file)
+            raw_score_df = pd.read_excel(score_file)
 
-    total_dup = len(duplicate_rows)
-    confirmed = len(st.session_state.chosen)
-    progress = 1.0 if total_dup == 0 else confirmed / total_dup
+            # 数据标准化
+            plan_df = normalize(raw_plan_df)
+            score_df = normalize(raw_score_df)
 
-    st.progress(progress)
-    st.caption(f"已确认 {confirmed} / {total_dup} 条（{int(progress * 100)}%）")
+            st.success(f"✅ 成功读取数据！计划表: {len(plan_df)} 行，分数表: {len(score_df)} 行")
 
-    for i, (plan_row, candidates) in enumerate(duplicate_rows):
-        title = (
-            f"{i + 1}. "
-            f"{plan_row.get('学校', '')} | "
-            f"{plan_row.get('省份', '')} | "
-            f"{plan_row.get('科类', '')} | "
-            f"{plan_row.get('批次', '')} | "
-            f"{plan_row.get('专业', '')} | "
-            f"{safe_text(plan_row.get('备注', ''))} | "
-            f"{safe_text(plan_row.get('招生类型', ''))}"
-        )
+            # ================= 选科要求字段清洗（仅此一列） =================
+            SUBJECT_COL = "专业选科要求(新高考专业省份)"
 
-        with st.expander(title, expanded=False):
-            if i in st.session_state.chosen:
-                st.success("✅ 已选择完成")
-                if st.button("🔁 重新选择", key=f"reset_{i}"):
-                    del st.session_state.chosen[i]
-                    st.rerun()
-            else:
-                options = [
-                    (None, "请选择对应的分数记录"),
-                    ("NO_SCORE", "🚫 无对应分数（保留计划，不填分数）")
-                ]
-
-                diff_cols = diff_fields(candidates, DISPLAY_FIELDS)
-
-                for idx, r in candidates.iterrows():
-                    info = []
-                    for col in DISPLAY_FIELDS:
-                        if col in r and pd.notna(r[col]):
-                            if col in diff_cols:
-                                info.append(f"🔴【{col}】{r[col]}")
-                            else:
-                                info.append(f"{col}:{r[col]}")
-                    options.append((idx, " | ".join(info)))
-
-                selected = st.radio(
-                    "请选择对应的分数记录",
-                    options=options,
-                    format_func=lambda x: x[1],
-                    index=0,
-                    key=f"radio_{i}"
+            if SUBJECT_COL in plan_df.columns:
+                plan_df[SUBJECT_COL] = (
+                    plan_df[SUBJECT_COL]
+                    .astype(str)
+                    .str.strip()
+                    .str.replace(r"^\^", "", regex=True)  # ⭐ 关键：去掉开头 ^
+                    .replace({"nan": "", "None": ""})
                 )
 
-                if selected[0] is not None:
-                    if st.button("✅ 确认本条选择", key=f"confirm_{i}"):
-                        st.session_state.chosen[i] = selected[0]
-                        st.rerun()
+            if "专业选科要求(新高考专业省份)" not in plan_df.columns:
+                plan_df["专业选科要求(新高考专业省份)"] = ""
 
-    # ================= 导出 =================
-    st.header("📤 导出结果")
+            # 检查必要字段
+            missing_in_plan = [k for k in MATCH_KEYS if k not in plan_df.columns]
+            missing_in_score = [k for k in MATCH_KEYS if k not in score_df.columns]
 
-    if st.button("🧹 手动清理缓存（重新开始匹配）"):
-        clear_cache()
-        st.success("缓存已清理")
-        st.rerun()
+            if missing_in_plan:
+                st.error(f"❌ 计划表缺少字段：{missing_in_plan}")
+                st.stop()
+            if missing_in_score:
+                st.error(f"❌ 分数表缺少字段：{missing_in_score}")
+                st.stop()
 
-    all_chosen = len(st.session_state.chosen) == len(duplicate_rows)
+            # 构建匹配键
+            plan_df["_key"] = build_key(plan_df)
+            score_df["_key"] = build_key(score_df)
+            score_groups = score_df.groupby("_key")
 
-    if st.button("📥 导出最终完整数据", disabled=not all_chosen):
-        final_rows = []
-        final_rows.extend(unique_rows)
+            # ================= 匹配 =================
+            unique_rows = []
+            duplicate_rows = []
+            unmatched_rows = []
 
-        for i, (plan_row, _) in enumerate(duplicate_rows):
-            score_idx = st.session_state.chosen[i]
+            for _, plan_row in plan_df.iterrows():
+                key = plan_row["_key"]
+                if key not in score_groups.groups:
+                    unmatched_rows.append(plan_row)
+                else:
+                    group = score_groups.get_group(key)
+                    if len(group) == 1:
+                        unique_rows.append(merge_plan_score(plan_row, group.iloc[0]))
+                    else:
+                        duplicate_rows.append((plan_row, group))
 
-            if score_idx == "NO_SCORE":
-                score_row = {}
-            else:
-                score_row = score_df.loc[score_idx]
+            # ================= 统计 =================
+            st.success(
+                f"✅ 唯一匹配：{len(unique_rows)} 条 ｜ "
+                f"⚠ 重复匹配：{len(duplicate_rows)} 条 ｜ "
+                f"❌ 未匹配：{len(unmatched_rows)} 条"
+            )
 
-            final_rows.append(merge_plan_score(plan_row, score_row))
+            # ================= 重复匹配 =================
+            st.header("⚠ 重复匹配人工确认区")
 
-        final_df = pd.DataFrame(final_rows)
-        unmatched_df = pd.DataFrame(unmatched_rows).drop(columns=["_key"], errors="ignore")
+            total_dup = len(duplicate_rows)
+            confirmed = len(st.session_state.chosen)
+            progress = 1.0 if total_dup == 0 else confirmed / total_dup
 
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            final_df.to_excel(writer, sheet_name="最终完整数据", index=False)
-            unmatched_df.to_excel(writer, sheet_name="未匹配数据", index=False)
+            st.progress(progress)
+            st.caption(f"已确认 {confirmed} / {total_dup} 条（{int(progress * 100)}%）")
 
-            ws = writer.book["最终完整数据"]
-            for col_idx, col_name in enumerate(final_df.columns, start=1):
-                if col_name in TEXT_COLUMNS:
-                    col_letter = get_column_letter(col_idx)
-                    for row in range(2, ws.max_row + 1):
-                        ws[f"{col_letter}{row}"].number_format = "@"
+            for i, (plan_row, candidates) in enumerate(duplicate_rows):
+                title = (
+                    f"{i + 1}. "
+                    f"{plan_row.get('学校', '')} | "
+                    f"{plan_row.get('省份', '')} | "
+                    f"{plan_row.get('科类', '')} | "
+                    f"{plan_row.get('批次', '')} | "
+                    f"{plan_row.get('专业', '')} | "
+                    f"{safe_text(plan_row.get('备注', ''))} | "
+                    f"{safe_text(plan_row.get('招生类型', ''))}"
+                )
 
-        output.seek(0)
+                with st.expander(title, expanded=False):
+                    if i in st.session_state.chosen:
+                        st.success("✅ 已选择完成")
+                        if st.button("🔁 重新选择", key=f"reset_{i}"):
+                            del st.session_state.chosen[i]
+                            st.rerun()
+                    else:
+                        options = [
+                            (None, "请选择对应的分数记录"),
+                            ("NO_SCORE", "🚫 无对应分数（保留计划，不填分数）")
+                        ]
 
-        st.download_button(
-            "⬇ 下载 Excel",
-            data=output,
-            file_name=f"匹配结果_{uuid.uuid4().hex[:6]}.xlsx"
-        )
+                        diff_cols = diff_fields(candidates, DISPLAY_FIELDS)
 
-        clear_cache()
+                        for idx, r in candidates.iterrows():
+                            info = []
+                            for col in DISPLAY_FIELDS:
+                                if col in r and pd.notna(r[col]):
+                                    if col in diff_cols:
+                                        info.append(f"🔴【{col}】{r[col]}")
+                                    else:
+                                        info.append(f"{col}:{r[col]}")
+                            options.append((idx, " | ".join(info)))
 
+                        selected = st.radio(
+                            "请选择对应的分数记录",
+                            options=options,
+                            format_func=lambda x: x[1],
+                            index=0,
+                            key=f"radio_{i}"
+                        )
 
+                        if selected[0] is not None:
+                            if st.button("✅ 确认本条选择", key=f"confirm_{i}"):
+                                st.session_state.chosen[i] = selected[0]
+                                st.rerun()
+
+            # ================= 导出 =================
+            st.header("📤 导出结果")
+
+            if st.button("🧹 手动清理缓存（重新开始匹配）"):
+                clear_cache()
+                st.success("缓存已清理")
+                st.rerun()
+
+            all_chosen = len(st.session_state.chosen) == len(duplicate_rows)
+
+            if st.button("📥 导出最终完整数据", disabled=not all_chosen):
+                final_rows = []
+                final_rows.extend(unique_rows)
+
+                for i, (plan_row, _) in enumerate(duplicate_rows):
+                    score_idx = st.session_state.chosen[i]
+
+                    if score_idx == "NO_SCORE":
+                        score_row = {}
+                    else:
+                        score_row = score_df.loc[score_idx]
+
+                    final_rows.append(merge_plan_score(plan_row, score_row))
+
+                final_df = pd.DataFrame(final_rows)
+                unmatched_df = pd.DataFrame(unmatched_rows).drop(columns=["_key"], errors="ignore")
+
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                    final_df.to_excel(writer, sheet_name="最终完整数据", index=False)
+                    unmatched_df.to_excel(writer, sheet_name="未匹配数据", index=False)
+
+                    ws = writer.book["最终完整数据"]
+                    for col_idx, col_name in enumerate(final_df.columns, start=1):
+                        if col_name in TEXT_COLUMNS:
+                            col_letter = get_column_letter(col_idx)
+                            for row in range(2, ws.max_row + 1):
+                                ws[f"{col_letter}{row}"].number_format = "@"
+
+                output.seek(0)
+
+                st.download_button(
+                    "⬇ 下载 Excel",
+                    data=output,
+                    file_name=f"匹配结果_{uuid.uuid4().hex[:6]}.xlsx"
+                )
+
+                clear_cache()
+
+        except Exception as e:
+            st.error(f"❌ 数据处理出错：{str(e)}")
+            st.code(traceback.format_exc())
+    else:
+        st.info("👆 **请上传计划表和分数表开始匹配**")
+
+# =====================================================
 # ======================= TAB 5 =======================
+# =====================================================
 with tab5:
     st.header("📊 学业桥-高考专业分数据转换")
 
