@@ -529,7 +529,7 @@ def check_tesseract_installation():
 
 # ------------------------ Streamlit UI ------------------------
 st.title("🧰 综合处理工具箱 - 完整版（带进度条 & 日志）")
-tab1, tab2, tab3, tab4, tab5 st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "网页表格抓取",
     "网页图片下载",
     "Excel日期处理",
