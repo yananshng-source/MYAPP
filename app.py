@@ -23,6 +23,8 @@ import pytesseract
 import os
 from PIL import Image, ImageOps, ImageEnhance
 import re
+from openpyxl.utils import get_column_letter  # 新增导入
+import uuid  # 新增导入
 
 # ------------------------ Config ------------------------
 st.set_page_config(page_title="综合处理工具箱", layout="wide")
