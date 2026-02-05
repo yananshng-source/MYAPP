@@ -763,7 +763,6 @@ with tab4:
 
 
     # ================= 工具函数 =================
-    # ================= 工具函数 =================
     def normalize(df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         for col in MATCH_KEYS:
@@ -979,9 +978,16 @@ with tab4:
     plan_file = st.file_uploader("📘 上传【计划表】Excel", type=["xls", "xlsx"])
     score_file = st.file_uploader("📙 上传【分数表】Excel", type=["xls", "xlsx"])
 
-    if not plan_file or not score_file:
+    if plan_file and score_file:
+        try:
+            plan_df = normalize(pd.read_excel(plan_file))
+            score_df = normalize(pd.read_excel(score_file))
+            st.success("✅ 文件上传成功，开始匹配...")
+            # ... 匹配、统计、下载逻辑
+        except Exception as e:
+            st.error(f"读取文件失败: {e}")
+    else:
         st.info("请先上传【计划表】和【分数表】")
-        st.stop()
 
     # ================= 读取数据 =================
     plan_df = normalize(pd.read_excel(plan_file))
@@ -1291,7 +1297,6 @@ with tab5:
 
 
     # =========================
-
 
     # =========================
     # 主逻辑
