@@ -23,7 +23,6 @@ import pytesseract
 import os
 from PIL import Image, ImageOps, ImageEnhance
 import re
-pytesseract.pytesseract.tesseract_cmd = r'E:\tesseract-ocr\tesseract.exe'
 
 # ------------------------ Config ------------------------
 st.set_page_config(page_title="综合处理工具箱", layout="wide")
@@ -763,6 +762,7 @@ with tab4:
 
 
     # ================= 工具函数 =================
+    # ================= 工具函数 =================
     def normalize(df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         for col in MATCH_KEYS:
@@ -978,17 +978,9 @@ with tab4:
     plan_file = st.file_uploader("📘 上传【计划表】Excel", type=["xls", "xlsx"])
     score_file = st.file_uploader("📙 上传【分数表】Excel", type=["xls", "xlsx"])
 
-    # ❌ 不再使用 st.stop()
     if not plan_file or not score_file:
         st.info("请先上传【计划表】和【分数表】")
-    else:
-        try:
-            plan_df = normalize(pd.read_excel(plan_file))
-            score_df = normalize(pd.read_excel(score_file))
-        except Exception as e:
-            st.error(f"读取 Excel 出错: {e}")
-            plan_df = pd.DataFrame()
-            score_df = pd.DataFrame()
+        st.stop()
 
     # ================= 读取数据 =================
     plan_df = normalize(pd.read_excel(plan_file))
@@ -1009,13 +1001,13 @@ with tab4:
     if "专业选科要求(新高考专业省份)" not in plan_df.columns:
         plan_df["专业选科要求(新高考专业省份)"] = ""
 
-    missing_fields_plan = [k for k in MATCH_KEYS if k not in plan_df.columns]
-    missing_fields_score = [k for k in MATCH_KEYS if k not in score_df.columns]
-
-    if missing_fields_plan:
-        st.warning(f"❌ 计划表缺少字段: {missing_fields_plan}")
-    if missing_fields_score:
-        st.warning(f"❌ 分数表缺少字段: {missing_fields_score}")
+    for k in MATCH_KEYS:
+        if k not in plan_df.columns:
+            st.error(f"❌ 计划表缺少字段：{k}")
+            st.stop()
+        if k not in score_df.columns:
+            st.error(f"❌ 分数表缺少字段：{k}")
+            st.stop()
 
     plan_df["_key"] = build_key(plan_df)
     score_df["_key"] = build_key(score_df)
@@ -1163,33 +1155,10 @@ with tab4:
     # =====================================================
 with tab5:
     st.header("📊 专业分 → 专业分-批量导入模板")
-    st.subheader("📥 数据上传")
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        prof_file = st.file_uploader(
-            "📥 上传【专业分（源数据）】",
-            type=["xls", "xlsx"],
-            key="prof"
-        )
-    with c2:
-        school_file = st.file_uploader(
-            "🏫 学校小范围数据导出",
-            type=["xls", "xlsx"],
-            key="school"
-        )
-    with c3:
-        major_file = st.file_uploader(
-            "📘 专业信息表",
-            type=["xls", "xlsx"],
-            key="major"
-        )
-
-    # 👇 注意：判断一定在 uploader 后面
-    if not (prof_file and school_file and major_file):
-        st.info("请先上传 3 个 Excel 文件")
-        st.stop()
-
+    # =========================
+    # 基础配置
+    # =========================
     LEVEL_MAP = {
         "1": "本科(普通)",
         "2": "专科(高职)",
@@ -1298,6 +1267,15 @@ with tab5:
 
 
     # =========================
+    # 文件上传
+    # =========================
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        prof_file = st.file_uploader("📥 上传【专业分（源数据）】", type=["xls", "xlsx"])
+    with c2:
+        school_file = st.file_uploader("🏫 学校小范围数据导出", type=["xls", "xlsx"])
+    with c3:
+        major_file = st.file_uploader("📘 专业信息表", type=["xls", "xlsx"])
 
     # =========================
     # 主逻辑
@@ -1399,7 +1377,6 @@ with tab5:
             data=to_excel(out),
             file_name="专业分-批量导入模板.xlsx"
         )
-
 
 # ------------------------ Footer ------------------------
 st.markdown("---")
