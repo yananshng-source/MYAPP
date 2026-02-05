@@ -125,6 +125,173 @@ def create_zip_download(files, zip_name="downloaded_images.zip"):
     zip_buffer.seek(0)
     return zip_buffer
 
+# ------------------------ 招生数据处理函数 ------------------------
+def process_admission_data(df_source):
+    """
+    处理招生数据，按照指定规则分组并生成结果表格
+    """
+    log("开始处理招生数据...")
+
+    # 数据清洗和预处理 - 只替换特殊字符，不填充空值
+    df_source = df_source.replace({'^': '', '~': ''}, regex=True)
+
+    # 处理数值字段，但不填充空值
+    numeric_columns = ['最高分', '最低分', '最低分位次', '录取人数', '招生人数']
+    for col in numeric_columns:
+        if col in df_source.columns:
+            df_source[col] = pd.to_numeric(df_source[col], errors='coerce')
+
+    # 确定首选科目 - 只针对新高考省份
+    def determine_preferred_subject(row):
+        col_type = str(row.get('科类', ''))
+        # 只有历史类和物理类才有首选科目
+        if '历史类' in col_type:
+            return '历史'
+        elif '物理类' in col_type:
+            return '物理'
+        # 文科、理科、综合等传统科类没有首选科目
+        return ''
+
+    df_source['首选科目'] = df_source.apply(determine_preferred_subject, axis=1)
+
+    # 确定招生类别（科类）- 修正逻辑
+    def determine_admission_category(row):
+        col_type = str(row.get('科类', ''))
+        # 新高考省份：历史类、物理类
+        if '历史类' in col_type:
+            return '历史类'
+        elif '物理类' in col_type:
+            return '物理类'
+        # 传统高考省份：文科、理科
+        elif '文科' in col_type:
+            return '文科'
+        elif '理科' in col_type:
+            return '理科'
+        elif '综合' in col_type:
+            return '综合'
+        # 其他情况保持原样
+        return col_type
+
+    df_source['招生类别'] = df_source.apply(determine_admission_category, axis=1)
+
+    # 处理层次字段 - 确保不为空
+    if '层次' in df_source.columns:
+        df_source['层次'] = df_source['层次'].fillna('本科(普通)')
+    else:
+        df_source['层次'] = '本科(普通)'
+
+    # 处理招生类型 - 确保不为空
+    if '招生类型' in df_source.columns:
+        df_source['招生类型'] = df_source['招生类型'].fillna('')
+    else:
+        df_source['招生类型'] = ''
+
+    # 处理专业组代码 - 确保不为空
+    if '专业组代码' in df_source.columns:
+        df_source['专业组代码'] = df_source['专业组代码'].fillna('')
+    else:
+        df_source['专业组代码'] = ''
+
+    # 处理其他分组列 - 确保不为空
+    df_source['省份'] = df_source['省份'].fillna('')
+    df_source['批次'] = df_source['批次'].fillna('')
+    df_source['学校'] = df_source['学校'].fillna('')
+
+    log("数据预处理完成，开始分组...")
+
+    # 分组处理 - 按照指定的列分组（加上学校）
+    grouping_columns = ['学校', '省份', '招生类别', '批次', '层次', '招生类型', '专业组代码']
+
+    log(f"使用以下列进行分组: {grouping_columns}")
+
+    # 创建一个列表来存储结果
+    results = []
+
+    # 对每个分组进行处理
+    group_count = 0
+    for group_key, group_data in df_source.groupby(grouping_columns):
+        group_count += 1
+        # 解包分组键
+        学校, 省份, 招生类别, 批次, 层次, 招生类型, 专业组代码 = group_key
+
+        # 计算组内聚合值 - 根据源数据中是否有该列来决定处理方式
+        最高分 = pd.NA
+        if '最高分' in group_data.columns and not group_data['最高分'].isna().all():
+            最高分 = group_data['最高分'].max()
+
+        最低分 = pd.NA
+        if '最低分' in group_data.columns and not group_data['最低分'].isna().all():
+            最低分 = group_data['最低分'].min()
+
+        # 找到最低分对应的记录
+        最低分位次 = pd.NA
+        数据来源 = ''
+        首选科目 = ''
+
+        if pd.notna(最低分) and '最低分' in group_data.columns:
+            min_score_rows = group_data[group_data['最低分'] == 最低分]
+            if not min_score_rows.empty:
+                min_score_row = min_score_rows.iloc[0]
+                # 这些字段根据源数据决定
+                最低分位次 = min_score_row.get('最低分位次', pd.NA) if '最低分位次' in min_score_row else pd.NA
+                数据来源 = min_score_row.get('数据来源', '') if '数据来源' in min_score_row else ''
+                首选科目 = min_score_row.get('首选科目', '') if '首选科目' in min_score_row else ''
+
+        # 如果没找到最低分记录，使用组内第一条记录获取其他字段
+        if not 数据来源 and len(group_data) > 0:
+            first_row = group_data.iloc[0]
+            数据来源 = first_row.get('数据来源', '') if '数据来源' in first_row else ''
+            首选科目 = first_row.get('首选科目', '') if '首选科目' in first_row else ''
+
+        # 计算录取人数总和（源数据中有录取人数）
+        录取人数 = pd.NA
+        if '录取人数' in group_data.columns and not group_data['录取人数'].isna().all():
+            录取人数 = group_data['录取人数'].sum()
+
+        # 招生人数处理 - 源数据中有就处理，没有就置空
+        招生人数 = pd.NA
+        if '招生人数' in group_data.columns and not group_data['招生人数'].isna().all():
+            招生人数 = group_data['招生人数'].sum()
+
+        # 添加到结果列表 - 只保留指定的列
+        result_row = {
+            '学校名称': 学校,
+            '省份': 省份,
+            '招生类别': 招生类别,
+            '层次': 层次,
+            '招生批次': 批次,
+            '招生类型': 招生类型,
+            '最高分': 最高分,
+            '最低分': 最低分,
+            '最低分位次': 最低分位次,
+            '录取人数': 录取人数,
+            '招生人数': 招生人数,
+            '数据来源': 数据来源,
+            '专业组代码': 专业组代码,
+            '首选科目': 首选科目,
+            '院校招生代码': ''  # 保持空值
+        }
+
+        results.append(result_row)
+
+    log(f"分组处理完成，共 {group_count} 个分组")
+
+    # 创建结果DataFrame
+    result_df = pd.DataFrame(results)
+
+    log(f"分组后共有 {len(result_df)} 组数据")
+
+    # 确保数值字段保持正确的数据类型
+    numeric_columns = ['最高分', '最低分', '最低分位次', '录取人数', '招生人数']
+    for col in numeric_columns:
+        if col in result_df.columns:
+            result_df[col] = pd.to_numeric(result_df[col], errors='coerce')
+
+    log(f"处理完成，共生成 {len(result_df)} 行记录")
+
+    return result_df
+
+
 # ------------------------ Core functions ------------------------
 def fix_mojibake(text):
     """修复常见的乱码问题"""
@@ -419,13 +586,221 @@ def crop_images_only(folder_path, x_center, y_center, crop_width, crop_height):
     return output_folder
 
 
+# ------------------------ 选科转换与日期处理 helpers ------------------------
+def convert_selection_requirements(df):
+    subject_mapping = {'物理': '物', '化学': '化', '生物': '生', '历史': '历', '地理': '地', '政治': '政',
+                       '思想政治': '政'}
+    df_new = df.copy()
+    df_new['首选科目'] = ''
+    df_new['选科要求类型'] = ''
+    df_new['次选'] = ''
+
+    # iterate rows - we selected "row" granular progress behavior
+    total_rows = len(df)
+    for idx, row in progress_iter(list(df.iterrows()), text="选科转换中"):
+        try:
+            i, r = row
+            text = str(r.get('选科要求', '')).strip()
+            cat = str(r.get('招生科类', '')).strip()
+            subjects = [subject_mapping.get(s, s) for s in
+                        re.findall(r'物理|化学|生物|历史|地理|政治|思想政治', text)]
+            first = ''
+            for s_full, s_short in subject_mapping.items():
+                if f'首选{s_full}' in text:
+                    first = s_short
+            if not first:
+                if '物理' in cat:
+                    first = '物'
+                elif '历史' in cat:
+                    first = '历'
+            remaining = [s for s in subjects if s != first]
+            second = ''.join(remaining)
+            if '不限' in text:
+                req_type = '不限科目专业组'
+            elif len(remaining) >= 1:
+                req_type = '多门选考'
+            else:
+                req_type = '单科、多科均需选考'
+            df_new.at[i, '首选科目'] = first
+            df_new.at[i, '次选'] = second
+            df_new.at[i, '选科要求类型'] = req_type
+        except Exception as e:
+            log(f"选科行处理失败: idx={i} -> {e}", level="warning")
+            continue
+    return df_new
+
+
+def safe_parse_datetime(datetime_str, year):
+    if pd.isna(datetime_str):
+        return None
+    datetime_str = str(datetime_str).strip()
+    if not re.search(r'(^|\D)\d{4}(\D|$)', datetime_str):
+        datetime_str = f"{year}年{datetime_str}"
+    patterns = [(r'(\d{4})年(\d{1,2})月(\d{1,2})日(\d{1,2}):(\d{1,2})', '%Y年%m月%d日%H:%M'),
+                (r'(\d{4})年(\d{1,2})月(\d{1,2})日', '%Y年%m月%d日'),
+                (r'(\d{4})-(\d{1,2})-(\d{1,2})', '%Y-%m-%d'),
+                (r'(\d{4})/(\d{1,2})/(\d{1,2})', '%Y/%m/%d')]
+    for pattern, fmt in patterns:
+        try:
+            dt = datetime.strptime(datetime_str, fmt)
+            return dt
+        except Exception:
+            continue
+    return None
+
+
+def process_date_range(date_str, year):
+    if pd.isna(date_str):
+        return date_str, "", ""
+    date_str = str(date_str).strip()
+    if '-' in date_str:
+        start_str, end_str = date_str.split('-', 1)
+        start_dt = safe_parse_datetime(start_str, year)
+        end_dt = safe_parse_datetime(end_str, year)
+        if not start_dt or not end_dt:
+            return date_str, "格式错误", "格式错误"
+        if ':' not in start_str:
+            start_dt = start_dt.replace(hour=0, minute=0, second=0)
+        if ':' not in end_str:
+            end_dt = end_dt.replace(hour=23, minute=59, second=59)
+        if end_dt < start_dt:
+            # assume cross-year, 尝试将结束年设到下一年
+            try:
+                end_dt = end_dt.replace(year=start_dt.year + 1)
+            except Exception:
+                pass
+        return date_str, start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')
+    else:
+        dt = safe_parse_datetime(date_str, year)
+        if not dt:
+            return date_str, "格式错误", "格式错误"
+        start_dt = dt.replace(hour=0, minute=0, second=0) if ':' not in date_str else dt
+        end_dt = dt.replace(hour=23, minute=59, second=59) if ':' not in date_str else dt
+        return date_str, start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+
+# ------------------------ 检查Tesseract安装 ------------------------
+def check_tesseract_installation():
+    """检查Tesseract是否安装"""
+    try:
+        # 尝试获取Tesseract版本
+        pytesseract.get_tesseract_version()
+        return True, "Tesseract OCR已安装"
+    except Exception as e:
+        return False, f"Tesseract OCR未安装或路径错误: {e}"
+
+
+# ------------------------ 图片OCR重命名函数 ------------------------
+def ocr_rename_images(folder_path, x_center=788, y_center=1955, crop_width=200, crop_height=50):
+    """
+    批量OCR识别图片中的页码并重命名文件
+    """
+    log("开始OCR识别和重命名图片...")
+
+    # 创建输出文件夹
+    output_folder = os.path.join(os.path.expanduser("~"), "Desktop", "crop_results")
+    os.makedirs(output_folder, exist_ok=True)
+
+    # 支持的图片格式
+    img_exts = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
+
+    # 获取图片文件列表
+    filenames = [f for f in os.listdir(folder_path) if f.lower().endswith(img_exts)]
+
+    if not filenames:
+        log("未找到图片文件", level="warning")
+        return [], []
+
+    log(f"找到 {len(filenames)} 个图片文件")
+
+    results = []
+    errors = []
+    used_pages = set()
+
+    # 处理每个图片文件
+    for filename in progress_iter(filenames, text="OCR识别中"):
+        try:
+            image_path = os.path.join(folder_path, filename)
+            img = Image.open(image_path).convert("RGB")
+            width, height = img.size
+
+            # 计算裁剪框
+            left = max(0, x_center - crop_width // 2)
+            right = min(width, x_center + crop_width // 2)
+            top = max(0, y_center - crop_height // 2)
+            bottom = min(height, y_center + crop_height // 2)
+
+            # 裁剪页码区域
+            crop_img = img.crop((left, top, right, bottom))
+            # 放大2倍，提高OCR精度
+            crop_img = crop_img.resize((crop_img.width * 2, crop_img.height * 2), Image.LANCZOS)
+            # 灰度 + 对比度增强 + 二值化
+            gray = ImageOps.grayscale(crop_img)
+            gray = ImageEnhance.Contrast(gray).enhance(3.0)
+            bw = gray.point(lambda x: 0 if x < 128 else 255, '1')
+
+            # OCR识别页码，仅识别数字
+            text = pytesseract.image_to_string(
+                bw, config='--psm 7 -c tessedit_char_whitelist=0123456789'
+            )
+            matches = re.findall(r'\d+', text)
+
+            if matches:
+                # 只取最后一组数字，避免前面多余数字
+                page_number = int(matches[-1])
+                # 避免重复页码
+                while page_number in used_pages:
+                    page_number += 1
+                used_pages.add(page_number)
+                ocr_status = "OCR识别成功"
+            else:
+                # 识别失败，递增编号
+                page_number = max(used_pages) + 1 if used_pages else 1
+                used_pages.add(page_number)
+                ocr_status = "OCR识别失败，使用递增编号"
+
+            # 构造新文件名并重命名原图
+            ext = os.path.splitext(filename)[1]
+            new_name = f"{page_number:03d}{ext}"
+            new_path = os.path.join(folder_path, new_name)
+
+            # 重命名文件
+            os.rename(image_path, new_path)
+
+            # 保存裁剪结果到桌面
+            crop_save_path = os.path.join(output_folder, f"crop_{new_name}")
+            bw.save(crop_save_path)
+
+            results.append({
+                '原文件名': filename,
+                '新文件名': new_name,
+                '页码': page_number,
+                'OCR识别文本': text.strip(),
+                '状态': ocr_status,
+                '裁剪结果路径': crop_save_path
+            })
+
+            log(f"✅ {filename} -> {new_name} ({ocr_status})")
+
+        except Exception as e:
+            error_msg = f"{filename} 处理失败: {e}"
+            errors.append(error_msg)
+            log(error_msg, level="error")
+            continue
+
+    log(f"OCR重命名完成！成功: {len(results)} 个，失败: {len(errors)} 个")
+    return results, errors
 
 # ------------------------ Streamlit UI ------------------------
 st.title("🧰 综合处理工具箱 - 完整版（带进度条 & 日志）")
-tab1, tab2, tab3= st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "网页表格抓取",
-    "网页图片下载"
-    "Excel日期处理"
+    "网页图片下载",
+    "图片裁剪",
+    "高校选科转换",
+    "Excel日期处理",
+    "招生数据处理",
+    "图片OCR重命名"
 ])
 
 # side: logs
@@ -589,9 +964,50 @@ with tab2:
                     log(f"下载图片失败: {e}\n{traceback.format_exc()}", level="error")
                     st.error(f"下载图片出错: {e}")
 
+# ------------------------ Tab 3: 图片裁剪 ------------------------
+with tab3:
+    st.subheader("图片裁剪（仅裁剪保存）")
+    folder_path = st.text_input("图片文件夹路径（绝对路径）", key="img_folder")
+    x_center = st.number_input("页码中心X", value=788, key="x_center")
+    y_center = st.number_input("页码中心Y", value=1955, key="y_center")
+    crop_w = st.number_input("裁剪宽度(px)", value=200, key="crop_w")
+    crop_h = st.number_input("裁剪高度(px)", value=50, key="crop_h")
+    if st.button("裁剪图片", key="crop_btn"):
+        if not folder_path or not os.path.exists(folder_path):
+            st.warning("请提供有效图片文件夹路径")
+        else:
+            try:
+                output_folder = crop_images_only(folder_path, x_center, y_center, crop_w, crop_h)
+                st.success(f"完成！裁剪结果已保存到：{output_folder}")
+            except Exception as e:
+                log(f"裁剪失败: {e}\n{traceback.format_exc()}", level="error")
+                st.error("裁剪异常，详情见日志")
 
+# ------------------------ Tab 4: 高校选科转换 ------------------------
+with tab4:
+    st.subheader("高校选科转换")
+    uploaded_file = st.file_uploader("上传Excel文件", type=["xlsx", "xls"], key="sel_excel")
+    if uploaded_file:
+        try:
+            df = pd.read_excel(uploaded_file)
+            st.write("原始数据预览", df.head())
+            if st.button("转换选科", key="sel_btn"):
+                try:
+                    df_result = convert_selection_requirements(df)
+                    st.write("转换结果预览", df_result.head())
+                    towrite = BytesIO()
+                    df_result.to_excel(towrite, index=False)
+                    towrite.seek(0)
+                    st.download_button("下载转换结果Excel", data=towrite.getvalue(), file_name="选科转换结果.xlsx")
+                    st.success("选科转换完成")
+                except Exception as e:
+                    log(f"选科转换失败: {e}\n{traceback.format_exc()}", level="error")
+                    st.error("选科转换出错，详情见日志")
+        except Exception as e:
+            log(f"读取上传文件失败: {e}", level="error")
+            st.error("无法读取上传的 Excel 文件")
 
-# ------------------------ Tab 3: Excel日期处理 ------------------------
+# ------------------------ Tab 5: Excel日期处理 ------------------------
 with tab5:
     st.subheader("Excel日期处理")
     uploaded_file2 = st.file_uploader("上传Excel文件", type=["xlsx", "xls"], key="date_excel")
@@ -630,6 +1046,307 @@ with tab5:
             log(f"读取上传文件失败: {e}", level="error")
             st.error("无法读取上传的 Excel 文件")
 
+# ------------------------ Tab 6: 招生数据处理 ------------------------
+with tab6:
+    st.subheader("🎓 招生数据处理")
+    st.markdown("""
+    本工具按照以下规则处理招生数据：
+
+    - **分组规则**：学校、省份、科类、批次、层次、招生类型、专业组代码
+
+    - **输出列（固定15列）**：
+      1. 学校名称
+      2. 省份
+      3. 招生类别
+      4. 层次
+      5. 招生批次
+      6. 招生类型
+      7. 最高分
+      8. 最低分
+      9. 最低分位次
+      10. 录取人数
+      11. 招生人数
+      12. 数据来源
+      13. 专业组代码
+      14. 首选科目
+      15. 院校招生代码
+
+    - **处理规则**：
+      - 所有列都根据源数据决定，有值就处理，没值就置空
+      - 最高分 = 组内最高分的最大值
+      - 最低分 = 组内最低分的最小值
+      - 最低分位次 = 最低分对应的位次
+      - 录取人数 = 组内录取人数总和
+      - 招生人数 = 组内招生人数总和
+      - 其他字段 = 使用最低分对应的记录值，如果没有则使用组内第一条记录
+    """)
+
+    # 文件上传
+    uploaded_file_admission = st.file_uploader(
+        "上传招生数据Excel文件",
+        type=['xlsx'],
+        help="请上传包含招生数据的Excel文件，系统会输出固定的15列数据",
+        key="admission_excel"
+    )
+
+    if uploaded_file_admission is not None:
+        try:
+            # 读取上传的文件
+            df_source = pd.read_excel(uploaded_file_admission)
+
+            # 显示源数据信息
+            st.subheader("📊 源数据信息")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.write(f"**总记录数:** {len(df_source)}")
+            with col2:
+                st.write(f"**总列数:** {len(df_source.columns)}")
+            with col3:
+                st.write(f"**所有列名:** {list(df_source.columns)}")
+
+            # 显示源数据预览
+            st.write("**源数据预览:**")
+            st.dataframe(df_source.head(10), use_container_width=True)
+
+            # 处理按钮
+            if st.button("🚀 开始处理招生数据", type="primary", key="admission_btn"):
+                with st.spinner("正在处理招生数据，请稍候..."):
+                    result_df = process_admission_data(df_source)
+
+                if len(result_df) == 0:
+                    st.error("警告：没有生成任何数据，请检查源数据文件")
+                    st.stop()
+
+                # 显示处理结果
+                st.subheader("✅ 处理结果")
+
+                # 显示统计信息
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("学校数量", result_df['学校名称'].nunique())
+                with col2:
+                    st.metric("省份数量", result_df['省份'].nunique())
+                with col3:
+                    st.metric("总记录数", len(result_df))
+                with col4:
+                    st.metric("输出列数", len(result_df.columns))
+
+                # 显示输出列信息
+                st.write(f"**输出列名 ({len(result_df.columns)}列):**")
+                output_columns = [
+                    '学校名称', '省份', '招生类别', '层次', '招生批次', '招生类型',
+                    '最高分', '最低分', '最低分位次', '录取人数', '招生人数',
+                    '数据来源', '专业组代码', '首选科目', '院校招生代码'
+                ]
+                for i, col in enumerate(output_columns, 1):
+                    st.write(f"{i}. {col}")
+
+                # 显示数据预览
+                st.dataframe(result_df[output_columns], use_container_width=True)
+
+                # 显示字段统计
+                st.subheader("📈 字段数据统计")
+
+                # 检查各字段的有效数据比例
+                st.write("**各字段有效数据比例:**")
+                stats_data = []
+                for col in output_columns:
+                    if col in result_df.columns:
+                        total = len(result_df)
+                        valid = result_df[col].notna().sum()
+                        if result_df[col].dtype == 'object':
+                            # 对于字符串列，检查非空字符串
+                            valid = (result_df[col].notna() & (result_df[col] != '')).sum()
+                        percentage = (valid / total) * 100 if total > 0 else 0
+                        stats_data.append({
+                            '字段名': col,
+                            '有效数据数': valid,
+                            '有效比例%': f"{percentage:.1f}%"
+                        })
+
+                stats_df = pd.DataFrame(stats_data)
+                st.dataframe(stats_df, use_container_width=True)
+
+                # 下载功能
+                st.subheader("📥 下载处理结果")
+
+                # 将DataFrame转换为Excel字节流，确保列顺序
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    # 按照指定顺序输出列
+                    result_df[output_columns].to_excel(writer, index=False, sheet_name='处理结果')
+
+                processed_data = output.getvalue()
+
+                st.download_button(
+                    label="📥 下载处理后的Excel文件",
+                    data=processed_data,
+                    file_name="分组处理后的招生数据.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_admission"
+                )
+
+        except Exception as e:
+            st.error(f"处理过程中出现错误: {e}")
+            st.info("请检查上传的文件格式是否正确")
+# ------------------------ Tab 7: 图片OCR重命名 ------------------------
+with tab7:
+    st.subheader("🔤 图片OCR重命名")
+    st.success("✅ Tesseract v5.5.0 已就绪！")
+
+    st.warning("⚠️ **注意：在云端环境中，请使用文件上传功能**")
+
+    # 方法1：多文件上传
+    st.write("### 📤 上传图片文件")
+    uploaded_files = st.file_uploader(
+        "选择图片文件",
+        type=['png', 'jpg', 'jpeg', 'bmp', 'tiff'],
+        accept_multiple_files=True,
+        help="可以多选图片文件",
+        key="image_uploader"
+    )
+
+    # 创建临时处理目录
+    temp_processing_dir = None
+
+    if uploaded_files:
+        # 创建临时目录来处理文件
+        import tempfile
+
+        temp_processing_dir = tempfile.mkdtemp()
+
+        st.success(f"✅ 已上传 {len(uploaded_files)} 个文件")
+
+        # 保存上传的文件到临时目录
+        saved_files = []
+        for i, uploaded_file in enumerate(uploaded_files):
+            file_path = os.path.join(temp_processing_dir, uploaded_file.name)
+            with open(file_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            saved_files.append(uploaded_file.name)
+
+        # 显示上传的文件列表
+        st.write("**已上传的文件:**")
+        for file_name in saved_files:
+            st.write(f"- {file_name}")
+
+        # 显示图片预览
+        st.write("### 👀 图片预览")
+        preview_cols = st.columns(3)
+        for i, uploaded_file in enumerate(uploaded_files[:6]):
+            col = preview_cols[i % 3]
+            with col:
+                try:
+                    img = Image.open(uploaded_file)
+                    img.thumbnail((200, 200))
+                    st.image(img, caption=uploaded_file.name, use_column_width=True)
+                except Exception as e:
+                    st.error(f"预览失败: {uploaded_file.name}")
+
+    # OCR参数设置
+    st.write("### ⚙️ OCR参数设置")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        x_center_ocr = st.number_input(
+            "页码中心X坐标",
+            value=788,
+            help="距离图片左边的像素数",
+            key="x_center_param"
+        )
+        crop_width_ocr = st.number_input(
+            "裁剪宽度(px)",
+            value=200,
+            help="水平裁剪区域宽度",
+            key="crop_width_param"
+        )
+
+    with col2:
+        y_center_ocr = st.number_input(
+            "页码中心Y坐标",
+            value=1955,
+            help="距离图片顶部的像素数",
+            key="y_center_param"
+        )
+        crop_height_ocr = st.number_input(
+            "裁剪高度(px)",
+            value=50,
+            help="垂直裁剪区域高度",
+            key="crop_height_param"
+        )
+
+    # 处理按钮
+    if uploaded_files:
+        if st.button("🚀 开始OCR重命名", type="primary", key="process_uploaded_files"):
+            try:
+                with st.spinner(f"正在处理 {len(uploaded_files)} 个图片文件..."):
+                    # 使用临时目录进行处理
+                    results, errors = ocr_rename_images(
+                        temp_processing_dir,
+                        x_center_ocr, y_center_ocr,
+                        crop_width_ocr, crop_height_ocr
+                    )
+
+                # 显示处理结果
+                if results:
+                    st.success(f"✅ OCR重命名完成！成功处理 {len(results)} 个文件")
+
+                    # 创建下载包
+                    st.subheader("📥 下载结果")
+
+                    # 创建ZIP文件包含重命名后的图片
+                    zip_buffer = BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                        for result in results:
+                            old_path = os.path.join(temp_processing_dir, result['原文件名'])
+                            new_path = os.path.join(temp_processing_dir, result['新文件名'])
+                            if os.path.exists(new_path):
+                                zip_file.write(new_path, result['新文件名'])
+
+                    zip_buffer.seek(0)
+
+                    # 下载ZIP文件
+                    st.download_button(
+                        label="📦 下载重命名后的图片(ZIP)",
+                        data=zip_buffer.getvalue(),
+                        file_name="重命名后的图片.zip",
+                        mime="application/zip",
+                        key="download_zip"
+                    )
+
+                    # 显示处理报告
+                    st.subheader("📋 处理报告")
+                    results_df = pd.DataFrame(results)
+                    st.dataframe(results_df, use_container_width=True)
+
+                    # 下载Excel报告
+                    excel_buffer = BytesIO()
+                    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                        results_df.to_excel(writer, index=False, sheet_name='OCR重命名结果')
+
+                    st.download_button(
+                        label="📊 下载处理报告(Excel)",
+                        data=excel_buffer.getvalue(),
+                        file_name="OCR处理报告.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_excel"
+                    )
+
+                if errors:
+                    st.warning(f"有 {len(errors)} 个文件处理失败")
+                    for error in errors[:3]:
+                        st.error(error)
+
+            except Exception as e:
+                st.error(f"处理过程出错: {e}")
+
+    # 方法2：使用应用内的示例文件（备选方案）
+    st.write("---")
+    st.write("### 🎯 测试功能")
+
+    if st.button("🧪 使用测试图片", key="use_test_images"):
+        st.info("测试功能：使用内置示例验证OCR功能")
+        # 这里可以添加使用内置测试图片的逻辑
 # ------------------------ Footer ------------------------
 st.markdown("---")
 st.caption("说明：已默认启用统一请求配置（超时与证书策略）。若需将 VERIFY_SSL 设为 True，请修改文件顶部的常量并重启。")
