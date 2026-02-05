@@ -933,7 +933,22 @@ with tab5:
         school_df = pd.read_excel(school_file, dtype=str)
         major_df = pd.read_excel(major_file, dtype=str)
 
-        df["一级层次"] = df["层次"].map(LEVEL_MAP)
+        # ===== 层次字段兜底处理 =====
+        if "层次" in df.columns:
+            df["一级层次"] = df["层次"].map(LEVEL_MAP)
+        elif "层次代码" in df.columns:
+            df["一级层次"] = df["层次代码"].map(LEVEL_MAP)
+        elif "学历层次" in df.columns:
+            df["一级层次"] = df["学历层次"].map(LEVEL_MAP)
+        else:
+            st.error(
+                "❌ 专业分源数据缺少【层次】字段。\n\n"
+                "请确认 Excel 中包含以下任一列名：\n"
+                "• 层次\n"
+                "• 层次代码\n"
+                "• 学历层次"
+            )
+            st.stop()
 
         out = pd.DataFrame()
         out["学校名称"] = df["院校名称"]
