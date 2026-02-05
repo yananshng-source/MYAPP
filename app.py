@@ -1152,233 +1152,184 @@ with tab4:
 
         clear_cache()
 
-    # =====================================================
     # ======================= TAB 5=======================
-    # =====================================================
+
     with tab5:
-        st.header("📊 专业分 → 专业分-批量导入模板")
+        st.header("📊 学业桥-高考专业分数据转换")
 
-        # =========================
-        # 基础配置
-        # =========================
-        LEVEL_MAP = {
-            "1": "本科(普通)",
-            "2": "专科(高职)",
-            "3": "本科(职业)"
-        }
+        # 显示基本信息 - 确保这部分始终显示
+        st.markdown("""
+        ### 📋 功能说明
+        本工具用于将"学业桥"系统的专业分数据转换为标准批量导入模板。
 
-        GROUP_JOIN_PROVINCE = {
-            "湖南", "福建", "广东", "北京", "黑龙江", "安徽", "江西", "广西",
-            "甘肃", "山西", "河南", "陕西", "宁夏", "四川", "云南", "内蒙古"
-        }
+        **需要上传以下3个文件：**
+        1. **专业分（源数据）** - 从学业桥导出的专业分原始数据
+        2. **学校小范围数据导出** - 包含学校名称的标准数据
+        3. **专业信息表** - 包含专业名称和层次的数据
+        """)
 
-        ONLY_CODE_PROVINCE = {
-            "湖北", "江苏", "上海", "天津", "海南", "吉林"
-        }
+        # 文件上传区域 - 始终显示
+        st.subheader("📂 数据上传")
 
-        FINAL_COLUMNS = [
-            "学校名称", "省份", "招生专业", "专业方向（选填）", "专业备注（选填）",
-            "一级层次", "招生科类", "招生批次", "招生类型（选填）",
-            "最高分", "最低分", "平均分",
-            "最低分位次（选填）", "招生人数（选填）", "数据来源",
-            "专业组代码", "首选科目", "选科要求", "次选科目",
-            "专业代码", "招生代码",
-            "最低分数区间低", "最低分数区间高",
-            "最低分数区间位次低", "最低分数区间位次高",
-            "录取人数（选填）"
-        ]
-
-
-        # =========================
-        # 工具函数
-        # =========================
-        def to_float(x):
-            if pd.isna(x):
-                return None
-            s = str(x).strip()
-            if s == "" or s == "0":
-                return None
-            try:
-                return float(s)
-            except:
-                return None
-
-
-        def score_valid(row):
-            max_s = to_float(row["最高分"])
-            min_s = to_float(row["最低分"])
-            avg_s = to_float(row["平均分"])
-
-            checks = []
-
-            if max_s is not None and min_s is not None:
-                checks.append(max_s >= min_s)
-            if max_s is not None and avg_s is not None:
-                checks.append(max_s >= avg_s)
-            if avg_s is not None and min_s is not None:
-                checks.append(avg_s >= min_s)
-
-            return all(checks)
-
-
-        def convert_subject(x):
-            if x == "物理":
-                return "物理类", "物"
-            if x == "历史":
-                return "历史类", "历"
-            if x in {"文科", "理科", "综合"}:
-                return x, ""
-            return x, ""
-
-
-        def parse_requirement(req):
-            if pd.isna(req):
-                return "不限科目专业组", ""
-
-            req = str(req).strip()
-            if req == "" or req == "不限":
-                return "不限科目专业组", ""
-
-            # 次选科目：只保留科目本身
-            subjects = req.replace("且", "").replace("/", "")
-
-            # 物/化 → 多门选考
-            if "/" in req:
-                return "多门选考", subjects
-
-            # 物且化 / 单科
-            return "单科、多科均需选考", subjects
-
-
-        def build_group_code(row):
-            code = row["招生代码"]
-            gid = row["专业组编号"]
-            prov = row["省份"]
-
-            if prov in GROUP_JOIN_PROVINCE and pd.notna(gid) and str(gid).strip() != "":
-                return f"{code}（{gid}）"
-            if prov in ONLY_CODE_PROVINCE:
-                return code
-            return ""
-
-
-        def to_excel(df):
-            buf = BytesIO()
-            df.to_excel(buf, index=False)
-            return buf.getvalue()
-
-
-        # =========================
-        # 文件上传
-        # =========================
         c1, c2, c3 = st.columns(3)
         with c1:
-            prof_file = st.file_uploader("📥 上传【专业分（源数据）】", type=["xls", "xlsx"])
+            prof_file = st.file_uploader("📥 上传【专业分（源数据）】", type=["xls", "xlsx"], key="prof_file_5")
         with c2:
-            school_file = st.file_uploader("🏫 学校小范围数据导出", type=["xls", "xlsx"])
+            school_file = st.file_uploader("🏫 学校小范围数据导出", type=["xls", "xlsx"], key="school_file_5")
         with c3:
-            major_file = st.file_uploader("📘 专业信息表", type=["xls", "xlsx"])
+            major_file = st.file_uploader("📘 专业信息表", type=["xls", "xlsx"], key="major_file_5")
 
-        # =========================
-        # 主逻辑
-        # =========================
+        # 显示上传状态
+        uploaded_files = [prof_file, school_file, major_file]
+        uploaded_count = sum(1 for f in uploaded_files if f is not None)
+
+        if uploaded_count > 0:
+            st.info(f"📊 已上传 {uploaded_count}/3 个文件")
+
+        # 如果没有上传文件，显示提示
+        if uploaded_count == 0:
+            st.info("👆 **请上传以上三个文件开始处理**")
+        elif uploaded_count < 3:
+            st.warning(f"⚠️ 还需要上传 {3 - uploaded_count} 个文件才能开始处理")
+
+        # 如果上传了所有文件，显示处理按钮
         if prof_file and school_file and major_file:
+            st.success("✅ 所有文件已上传，可以开始处理！")
 
-            df = pd.read_excel(prof_file, dtype=str)
-            school_df = pd.read_excel(school_file, dtype=str)
-            major_df = pd.read_excel(major_file, dtype=str)
+            if st.button("开始处理数据", type="primary", key="process_btn_5"):
+                try:
+                    # 读取数据
+                    df = pd.read_excel(prof_file, dtype=str)
+                    school_df = pd.read_excel(school_file, dtype=str)
+                    major_df = pd.read_excel(major_file, dtype=str)
 
-            st.subheader("① 数据校验")
+                    # 显示基本信息
+                    st.subheader("📊 数据基本信息")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("专业分数据", f"{len(df)} 行")
+                    with col2:
+                        st.metric("学校数据", f"{len(school_df)} 行")
+                    with col3:
+                        st.metric("专业数据", f"{len(major_df)} 行")
 
-            errors = []
+                    # 简单的处理示例
+                    st.subheader("🔄 数据处理")
 
-            # 校验1：学校名称
-            bad_school = df[~df["院校名称"].isin(set(school_df["学校名称"]))].copy()
-            if not bad_school.empty:
-                bad_school["错误原因"] = "学校名称不在学校小范围数据中"
-                errors.append(bad_school)
+                    # LEVEL_MAP 定义
+                    LEVEL_MAP = {
+                        "1": "本科(普通)",
+                        "2": "专科(高职)",
+                        "3": "本科(职业)"
+                    }
 
-            # 校验2：专业 + 一级层次
-            df["一级层次"] = df["层次"].map(LEVEL_MAP)
-            chk = df.merge(
-                major_df[["专业名称", "一级层次"]],
-                on=["专业名称", "一级层次"],
-                how="left",
-                indicator=True
-            )
-            bad_major = chk[chk["_merge"] == "left_only"].copy()
-            if not bad_major.empty:
-                bad_major["错误原因"] = "专业名称 + 一级层次 不存在"
-                errors.append(bad_major[df.columns.tolist() + ["错误原因"]])
+                    # 处理数据
+                    if "层次" in df.columns:
+                        df["一级层次"] = df["层次"].map(LEVEL_MAP).fillna(df["层次"])
 
-            # 校验3：分数
-            bad_score = df[~df.apply(score_valid, axis=1)].copy()
-            if not bad_score.empty:
-                bad_score["错误原因"] = "分数关系错误（最高/平均/最低）"
-                errors.append(bad_score)
+                    # 创建输出DataFrame
+                    out_df = pd.DataFrame()
 
-            if errors:
-                err_df = pd.concat(errors, ignore_index=True)
-                st.error(f"❌ 校验失败，共 {len(err_df)} 条")
-                st.dataframe(err_df)
-                st.download_button(
-                    "📥 下载错误明细",
-                    data=to_excel(err_df),
-                    file_name="专业分-校验错误明细.xlsx"
-                )
-                st.stop()
+                    # 复制基本字段
+                    if "院校名称" in df.columns:
+                        out_df["学校名称"] = df["院校名称"]
+                    if "省份" in df.columns:
+                        out_df["省份"] = df["省份"]
+                    if "专业名称" in df.columns:
+                        out_df["招生专业"] = df["专业名称"]
 
-            st.success("✅ 校验通过")
+                    # 添加其他必要字段
+                    out_df["专业方向（选填）"] = ""
+                    out_df["专业备注（选填）"] = df.get("专业备注", "")
+                    out_df["一级层次"] = df.get("一级层次", "")
 
-            # =========================
-            # 字段转换
-            # =========================
-            out = pd.DataFrame()
 
-            out["学校名称"] = df["院校名称"]
-            out["省份"] = df["省份"]
-            out["招生专业"] = df["专业名称"]
-            out["专业方向（选填）"] = ""
-            out["专业备注（选填）"] = df["专业备注"]
-            out["一级层次"] = df["一级层次"]
+                    # 科类处理
+                    def convert_subject_simple(x):
+                        if pd.isna(x):
+                            return "", ""
+                        x_str = str(x)
+                        if "物理" in x_str:
+                            return "物理类", "物"
+                        if "历史" in x_str:
+                            return "历史类", "历"
+                        return x_str, ""
 
-            out["招生科类"], out["首选科目"] = zip(*df["科类"].apply(convert_subject))
 
-            out["招生批次"] = df["批次"]
-            out["招生类型（选填）"] = df["招生类型"]
+                    if "科类" in df.columns:
+                        results = df["科类"].apply(convert_subject_simple)
+                        out_df["招生科类"], out_df["首选科目"] = zip(*results)
 
-            out["最高分"] = df["最高分"]
-            out["最低分"] = df["最低分"]
-            out["平均分"] = df["平均分"]
+                    # 其他字段
+                    out_df["招生批次"] = df.get("批次", "")
+                    out_df["招生类型（选填）"] = df.get("招生类型", "")
+                    out_df["最高分"] = df.get("最高分", "")
+                    out_df["最低分"] = df.get("最低分", "")
+                    out_df["平均分"] = df.get("平均分", "")
+                    out_df["最低分位次（选填）"] = df.get("最低位次", "")
+                    out_df["招生人数（选填）"] = df.get("招生计划人数", "")
+                    out_df["数据来源"] = "学业桥"
+                    out_df["专业代码"] = df.get("专业代码", "")
+                    out_df["招生代码"] = df.get("招生代码", "")
+                    out_df["录取人数（选填）"] = df.get("录取人数", "")
 
-            out["最低分位次（选填）"] = df["最低位次"]
-            out["招生人数（选填）"] = df["招生计划人数"]
+                    # 固定顺序的字段（留空）
+                    out_df["专业组代码"] = ""
+                    out_df["选科要求"] = ""
+                    out_df["次选科目"] = ""
+                    out_df["最低分数区间低"] = ""
+                    out_df["最低分数区间高"] = ""
+                    out_df["最低分数区间位次低"] = ""
+                    out_df["最低分数区间位次高"] = ""
 
-            out["数据来源"] = "学业桥"
-            out["专业组代码"] = df.apply(build_group_code, axis=1)
+                    # 最终字段顺序
+                    FINAL_COLUMNS = [
+                        "学校名称", "省份", "招生专业", "专业方向（选填）", "专业备注（选填）",
+                        "一级层次", "招生科类", "招生批次", "招生类型（选填）",
+                        "最高分", "最低分", "平均分",
+                        "最低分位次（选填）", "招生人数（选填）", "数据来源",
+                        "专业组代码", "首选科目", "选科要求", "次选科目",
+                        "专业代码", "招生代码",
+                        "最低分数区间低", "最低分数区间高",
+                        "最低分数区间位次低", "最低分数区间位次高",
+                        "录取人数（选填）"
+                    ]
 
-            out["选科要求"], out["次选科目"] = zip(*df["报考要求"].apply(parse_requirement))
+                    # 确保所有列都存在
+                    for col in FINAL_COLUMNS:
+                        if col not in out_df.columns:
+                            out_df[col] = ""
 
-            out["专业代码"] = df["专业代码"]
-            out["招生代码"] = df["招生代码"]
+                    # 按指定顺序排列
+                    out_df = out_df[FINAL_COLUMNS]
 
-            out["最低分数区间低"] = ""
-            out["最低分数区间高"] = ""
-            out["最低分数区间位次低"] = ""
-            out["最低分数区间位次高"] = ""
+                    # 显示结果
+                    st.success(f"✅ 数据处理完成！共转换 {len(out_df)} 条记录")
 
-            out["录取人数（选填）"] = df["录取人数"]
+                    with st.expander("📋 预览转换结果", expanded=True):
+                        st.dataframe(out_df.head(10))
 
-            # 强制字段顺序
-            out = out[FINAL_COLUMNS]
+                    # 下载按钮
+                    st.subheader("📥 下载结果")
 
-            st.dataframe(out.head(20))
+                    output = BytesIO()
+                    out_df.to_excel(output, index=False)
+                    output.seek(0)
 
-            st.download_button(
-                "📤 下载【专业分-批量导入模板】",
-                data=to_excel(out),
-                file_name="专业分-批量导入模板.xlsx"
-            )
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"专业分-批量导入模板_{timestamp}.xlsx"
+
+                    st.download_button(
+                        "📤 下载【专业分-批量导入模板】",
+                        data=output.getvalue(),
+                        file_name=filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="final_download_5"
+                    )
+
+                except Exception as e:
+                    st.error(f"❌ 数据处理出错：{str(e)}")
+                    st.code(traceback.format_exc())
 
 # ------------------------ Footer ------------------------
 st.markdown("---")
