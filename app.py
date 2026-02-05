@@ -1156,15 +1156,32 @@ with tab4:
     # =====================================================
 with tab5:
     st.header("📊 专业分 → 专业分-批量导入模板")
-    # 文件上传
-    # =========================
+    st.subheader("📥 数据上传")
+
     c1, c2, c3 = st.columns(3)
     with c1:
-        prof_file = st.file_uploader("📥 上传【专业分（源数据）】", type=["xls", "xlsx"])
+        prof_file = st.file_uploader(
+            "📥 上传【专业分（源数据）】",
+            type=["xls", "xlsx"],
+            key="prof"
+        )
     with c2:
-        school_file = st.file_uploader("🏫 学校小范围数据导出", type=["xls", "xlsx"])
+        school_file = st.file_uploader(
+            "🏫 学校小范围数据导出",
+            type=["xls", "xlsx"],
+            key="school"
+        )
     with c3:
-        major_file = st.file_uploader("📘 专业信息表", type=["xls", "xlsx"])
+        major_file = st.file_uploader(
+            "📘 专业信息表",
+            type=["xls", "xlsx"],
+            key="major"
+        )
+
+    # 👇 注意：判断一定在 uploader 后面
+    if not (prof_file and school_file and major_file):
+        st.info("请先上传 3 个 Excel 文件")
+        st.stop()
 
     LEVEL_MAP = {
         "1": "本科(普通)",
