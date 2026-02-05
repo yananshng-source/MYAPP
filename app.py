@@ -1156,6 +1156,15 @@ with tab4:
     # =====================================================
 with tab5:
     st.header("📊 专业分 → 专业分-批量导入模板")
+    # 文件上传
+    # =========================
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        prof_file = st.file_uploader("📥 上传【专业分（源数据）】", type=["xls", "xlsx"])
+    with c2:
+        school_file = st.file_uploader("🏫 学校小范围数据导出", type=["xls", "xlsx"])
+    with c3:
+        major_file = st.file_uploader("📘 专业信息表", type=["xls", "xlsx"])
 
     LEVEL_MAP = {
         "1": "本科(普通)",
@@ -1265,15 +1274,7 @@ with tab5:
 
 
     # =========================
-    # 文件上传
-    # =========================
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        prof_file = st.file_uploader("📥 上传【专业分（源数据）】", type=["xls", "xlsx"])
-    with c2:
-        school_file = st.file_uploader("🏫 学校小范围数据导出", type=["xls", "xlsx"])
-    with c3:
-        major_file = st.file_uploader("📘 专业信息表", type=["xls", "xlsx"])
+
 
     # =========================
     # 主逻辑
