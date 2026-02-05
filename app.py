@@ -17,9 +17,11 @@ import subprocess
 import sys
 import tempfile
 import zipfile
-import pytesseract
+
+
 from PIL import ImageEnhance
-import pytesseract
+
+
 import os
 from PIL import Image, ImageOps, ImageEnhance
 import re
@@ -517,14 +519,14 @@ def process_date_range(date_str, year):
 
 
 # ------------------------ 检查Tesseract安装 ------------------------
-def check_tesseract_installation():
+#def check_tesseract_installation():
     """检查Tesseract是否安装"""
-    try:
+ #   try:
         # 尝试获取Tesseract版本
-        pytesseract.get_tesseract_version()
-        return True, "Tesseract OCR已安装"
-    except Exception as e:
-        return False, f"Tesseract OCR未安装或路径错误: {e}"
+  #      pytesseract.get_tesseract_version()
+   #     return True, "Tesseract OCR已安装"
+    #except Exception as e:
+     #   return False, f"Tesseract OCR未安装或路径错误: {e}"
 
 
 
@@ -1178,7 +1180,7 @@ with tab5:
     1. **专业分（源数据）** - 从学业桥导出的专业分原始数据
     2. **学校小范围数据导出** - 包含学校名称的标准数据
     3. **专业信息表** - 包含专业名称和层次的数据
-    """)
+    4.学业桥数据导出时加一列层次放在最后一列""")
 
     # 文件上传区域 - 始终显示
     st.subheader("📂 数据上传")
