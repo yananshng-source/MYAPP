@@ -1,8 +1,8 @@
-streamlit
-pandas
+xlrd>=2.0.1
 openpyxl
-pillow
-pytesseract
+pandas
+streamlit
 requests
 beautifulsoup4
-lxml
+Pillow
+pytesseract
