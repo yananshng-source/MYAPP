@@ -528,6 +528,7 @@ with st.sidebar.expander("运行日志（最新）", expanded=True):
 # ------------------------ Tab 1: 网页表格抓取 ------------------------
 with tab1:
     st.subheader("网页表格抓取")
+    st.markdown("同时抓取多个链接的表格，适用于招生快讯类的录取数据")
     urls_text = st.text_area("输入网页URL列表（每行一个）", height=160,
                              placeholder="例如:\nhttps://example.com/table1\nhttps://example.com/table2")
     group_cols = st.text_input("分组列（逗号分隔，可选）",
@@ -615,6 +616,7 @@ with tab1:
 # ------------------------ Tab 2: 网页图片下载 ------------------------
 with tab2:
     st.subheader("网页图片下载")
+    st.markdown("同时抓取多个链接的图片，适用于招生快讯类图片类的录取数据")
     urls_text2 = st.text_area("输入网页URL列表（每行一个）", height=160, key="img_urls")
 
     # 显示当前工作目录信息
