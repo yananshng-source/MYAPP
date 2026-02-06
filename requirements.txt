@@ -1,7 +1,21 @@
-xlrd>=2.0.1
-openpyxl
-pandas
-streamlit
-requests
-beautifulsoup4
-Pillow
+# Core
+streamlit==1.28.0
+
+# Data Processing
+pandas==2.0.3
+numpy==1.24.3
+openpyxl==3.1.2
+
+# Image Processing
+Pillow==10.0.0
+
+# Web Scraping
+requests==2.31.0
+beautifulsoup4==4.12.2
+lxml==4.9.3
+
+# Excel Export
+openpyxl==3.1.2
+
+# Temporary Files
+uuid>=1.30
