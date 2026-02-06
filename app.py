@@ -934,12 +934,17 @@ with tab4:
             "平均分": score_row.get("平均分", ""),
             "最低分位次": score_row.get("最低分位次", ""),
             "招生人数": enroll_count,
+            "数据来源": "学校官网",
             "专业组代码": clean_code_text(plan_row.get("专业组代码", "")),
             "首选科目": calc_first_subject(plan_row.get("科类", "")),
             "选科要求": select_req,
             "次选": second_req,
             "专业代码": clean_code_text(plan_row.get("专业代码", "")),
             "招生代码": clean_code_text(plan_row.get("招生代码", "")),
+            "最低分数区间低": "",
+            "最低分数区间高": "",
+            "最低分数区间位次低": "",
+            "最低分数区间位次高": "",
             "录取人数": score_row.get("录取人数", ""),
         }
 
