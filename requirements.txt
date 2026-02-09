@@ -6,3 +6,5 @@ pytesseract
 requests
 beautifulsoup4
 lxml
+xlrd>=2.0.1
+openpyxl
