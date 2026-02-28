@@ -481,33 +481,94 @@ def safe_parse_datetime(datetime_str, year):
 
 
 def process_date_range(date_str, year):
-    if pd.isna(date_str):
-        return date_str, "", ""
-    date_str = str(date_str).strip()
-    if '-' in date_str:
-        start_str, end_str = date_str.split('-', 1)
-        start_dt = safe_parse_datetime(start_str, year)
-        end_dt = safe_parse_datetime(end_str, year)
-        if not start_dt or not end_dt:
-            return date_str, "格式错误", "格式错误"
-        if ':' not in start_str:
-            start_dt = start_dt.replace(hour=0, minute=0, second=0)
-        if ':' not in end_str:
-            end_dt = end_dt.replace(hour=23, minute=59, second=59)
-        if end_dt < start_dt:
-            # assume cross-year, 尝试将结束年设到下一年
-            try:
-                end_dt = end_dt.replace(year=start_dt.year + 1)
-            except Exception:
-                pass
-        return date_str, start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')
-    else:
-        dt = safe_parse_datetime(date_str, year)
-        if not dt:
-            return date_str, "格式错误", "格式错误"
-        start_dt = dt.replace(hour=0, minute=0, second=0) if ':' not in date_str else dt
-        end_dt = dt.replace(hour=23, minute=59, second=59) if ':' not in date_str else dt
-        return date_str, start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        if not isinstance(date_str, str) or not date_str.strip():
+            return date_str, "", ""
+
+        raw = date_str
+        text = date_str.strip()
+
+        # =========================
+        # 1️⃣ 统一所有中文表达
+        # =========================
+        text = text.replace("—", "-")
+        text = text.replace("–", "-")
+        text = text.replace("至", "-")
+        text = text.replace("开始", "")
+        text = text.replace("止", "")
+        text = text.replace("，", "")
+        text = text.replace(",", "")
+        text = text.replace("：", ":")
+        text = text.replace("时", ":00")
+        text = re.sub(r"\s+", "", text)
+
+        # =========================
+        # 2️⃣ 同月区间：6月12-18日
+        # =========================
+        m_same = re.fullmatch(r"(\d{1,2})月(\d{1,2})-(\d{1,2})日", text)
+        if m_same:
+            m, d1, d2 = m_same.groups()
+            start_dt = datetime(year, int(m), int(d1), 0, 0)
+            end_dt = datetime(year, int(m), int(d2), 23, 59)
+            return raw, start_dt.strftime("%Y:%m:%d %H:%M:%S"), end_dt.strftime("%Y:%m:%d %H:%M:%S")
+
+        # =========================
+        # 3️⃣ 单日：7月12日
+        # =========================
+        m_single = re.fullmatch(r"(\d{1,2})月(\d{1,2})日", text)
+        if m_single:
+            m, d = m_single.groups()
+            start_dt = datetime(year, int(m), int(d), 0, 0)
+            end_dt = datetime(year, int(m), int(d), 23, 59)
+            return raw, start_dt.strftime("%Y:%m:%d %H:%M:%S"), end_dt.strftime("%Y:%m:%d %H:%M:%S")
+
+        # =========================
+        # 4️⃣ 解析所有日期
+        # =========================
+        date_matches = re.findall(r"(\d{1,2})月(\d{1,2})日", text)
+
+        # =========================
+        # 5️⃣ 解析所有时间
+        # =========================
+        time_matches = re.findall(r"\d{1,2}:\d{2}", text)
+
+        # =========================
+        # 6️⃣ 6月7日9:00-11:30（同日时间段）
+        # =========================
+        same_day_time = re.fullmatch(r"(\d{1,2})月(\d{1,2})日(\d{1,2}:\d{2})-(\d{1,2}:\d{2})", text)
+        if same_day_time:
+            m, d, t1, t2 = same_day_time.groups()
+            start_dt = datetime.strptime(f"{year}-{m}-{d} {t1}", "%Y-%m-%d %H:%M")
+            end_dt = datetime.strptime(f"{year}-{m}-{d} {t2}", "%Y-%m-%d %H:%M")
+            if end_dt < start_dt:
+                end_dt += timedelta(days=1)
+            return raw, start_dt.strftime("%Y:%m:%d %H:%M:%S"), end_dt.strftime("%Y:%m:%d %H:%M:%S")
+
+        # =========================
+        # 7️⃣ 两个完整日期 + 时间
+        # =========================
+        if len(date_matches) == 2 and len(time_matches) >= 2:
+            (m1, d1), (m2, d2) = date_matches[:2]
+            t1, t2 = time_matches[:2]
+
+            start_dt = datetime.strptime(f"{year}-{m1}-{d1} {t1}", "%Y-%m-%d %H:%M")
+            end_dt = datetime.strptime(f"{year}-{m2}-{d2} {t2}", "%Y-%m-%d %H:%M")
+
+            return raw, start_dt.strftime("%Y:%m:%d %H:%M:%S"), end_dt.strftime("%Y:%m:%d %H:%M:%S")
+
+        # =========================
+        # 8️⃣ 两个完整日期无时间
+        # =========================
+        if len(date_matches) == 2 and len(time_matches) == 0:
+            (m1, d1), (m2, d2) = date_matches[:2]
+            start_dt = datetime(year, int(m1), int(d1), 0, 0)
+            end_dt = datetime(year, int(m2), int(d2), 23, 59)
+            return raw, start_dt.strftime("%Y:%m:%d %H:%M:%S"), end_dt.strftime("%Y:%m:%d %H:%M:%S")
+
+        return raw, "格式错误", "格式错误"
+
+    except Exception:
+        return date_str, "格式错误", "格式错误"
 
 
 # ------------------------ Streamlit UI ------------------------
@@ -743,7 +804,7 @@ with tab4:
     **需要上传以下2个文件：**
     1. **分数表** - 整理好的需要入库的分数（可按下载的模板整理）
     2. **计划表** - 从高考数据库导出的计划数据
-    
+
     3.**重复数据是指一条计划有两条对应分数**
 
     **⚠️ 重要提示：**
