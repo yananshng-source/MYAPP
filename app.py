@@ -573,12 +573,14 @@ def process_date_range(date_str, year):
 
 # ------------------------ Streamlit UI ------------------------
 st.title("🧰 综合处理工具箱 - 完整版（带进度条 & 日志）")
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "网页表格抓取",
     "网页图片下载",
     "Excel日期处理",
     "分数匹配",
-    "学业桥-高考专业分数据转换"
+    "学业桥-高考专业分数据转换",
+    "院校分提取"
+
 ])
 
 # side: logs
@@ -1477,6 +1479,328 @@ with tab5:
             file_name="专业分-批量导入模板.xlsx",
             key="download_result_5"
         )
+# ------------------------ 院校分提取处理函数 ------------------------
+def process_admission_data(df_source):
+    """
+    处理院校分数据，按照指定规则分组并生成结果表格
+    """
+    log("开始处理院校分数据...")
+
+    # 数据清洗和预处理 - 只替换特殊字符，不填充空值
+    df_source = df_source.replace({'^': '', '~': ''}, regex=True)
+
+    # 处理数值字段，但不填充空值
+    numeric_columns = ['最高分', '最低分', '最低分位次', '录取人数', '招生人数']
+    for col in numeric_columns:
+        if col in df_source.columns:
+            df_source[col] = pd.to_numeric(df_source[col], errors='coerce')
+
+    # 确定首选科目 - 只针对新高考省份
+    def determine_preferred_subject(row):
+        col_type = str(row.get('科类', ''))
+        # 只有历史类和物理类才有首选科目
+        if '历史类' in col_type:
+            return '历史'
+        elif '物理类' in col_type:
+            return '物理'
+        # 文科、理科、综合等传统科类没有首选科目
+        return ''
+
+    df_source['首选科目'] = df_source.apply(determine_preferred_subject, axis=1)
+
+    # 确定招生类别（科类）- 修正逻辑
+    def determine_admission_category(row):
+        col_type = str(row.get('科类', ''))
+        # 新高考省份：历史类、物理类
+        if '历史类' in col_type:
+            return '历史类'
+        elif '物理类' in col_type:
+            return '物理类'
+        # 传统高考省份：文科、理科
+        elif '文科' in col_type:
+            return '文科'
+        elif '理科' in col_type:
+            return '理科'
+        elif '综合' in col_type:
+            return '综合'
+        # 其他情况保持原样
+        return col_type
+
+    df_source['招生类别'] = df_source.apply(determine_admission_category, axis=1)
+
+    # 处理层次字段 - 确保不为空
+    if '层次' in df_source.columns:
+        df_source['层次'] = df_source['层次'].fillna('本科(普通)')
+    else:
+        df_source['层次'] = '本科(普通)'
+
+    # 处理招生类型 - 确保不为空
+    if '招生类型' in df_source.columns:
+        df_source['招生类型'] = df_source['招生类型'].fillna('')
+    else:
+        df_source['招生类型'] = ''
+
+    # 处理专业组代码 - 确保不为空
+    if '专业组代码' in df_source.columns:
+        df_source['专业组代码'] = (
+            df_source['专业组代码']
+            .astype(str)
+            .str.replace(r'^\^', '', regex=True)  # ⭐ 去掉开头 ^
+            .str.strip()
+        )
+    else:
+        df_source['专业组代码'] = ''
+
+    # 处理其他分组列 - 确保不为空
+    df_source['省份'] = df_source['省份'].fillna('')
+    df_source['批次'] = df_source['批次'].fillna('')
+    df_source['学校'] = df_source['学校'].fillna('')
+
+    log("数据预处理完成，开始分组...")
+
+    # 分组处理 - 按照指定的列分组（加上学校）
+    grouping_columns = ['学校', '省份', '招生类别', '批次', '层次', '招生类型', '专业组代码']
+
+    log(f"使用以下列进行分组: {grouping_columns}")
+
+    # 创建一个列表来存储结果
+    results = []
+
+    # 对每个分组进行处理
+    group_count = 0
+    for group_key, group_data in df_source.groupby(grouping_columns):
+        group_count += 1
+        # 解包分组键
+        学校, 省份, 招生类别, 批次, 层次, 招生类型, 专业组代码 = group_key
+
+        # 计算组内聚合值 - 根据源数据中是否有该列来决定处理方式
+        最高分 = pd.NA
+        if '最高分' in group_data.columns and not group_data['最高分'].isna().all():
+            最高分 = group_data['最高分'].max()
+
+        最低分 = pd.NA
+        if '最低分' in group_data.columns and not group_data['最低分'].isna().all():
+            最低分 = group_data['最低分'].min()
+
+        # 找到最低分对应的记录
+        最低分位次 = pd.NA
+        数据来源 = ''
+        首选科目 = ''
+
+        if pd.notna(最低分) and '最低分' in group_data.columns:
+            min_score_rows = group_data[group_data['最低分'] == 最低分]
+            if not min_score_rows.empty:
+                min_score_row = min_score_rows.iloc[0]
+                # 这些字段根据源数据决定
+                最低分位次 = min_score_row.get('最低分位次', pd.NA) if '最低分位次' in min_score_row else pd.NA
+                数据来源 = min_score_row.get('数据来源', '') if '数据来源' in min_score_row else ''
+                首选科目 = min_score_row.get('首选科目', '') if '首选科目' in min_score_row else ''
+
+        # 计算录取人数总和（源数据中有录取人数）
+        录取人数 = pd.NA
+        if '录取人数' in group_data.columns and not group_data['录取人数'].isna().all():
+            录取人数 = group_data['录取人数'].sum()
+
+        # 招生人数处理 - 源数据中有就处理，没有就置空
+        招生人数 = pd.NA
+        if '招生人数' in group_data.columns and not group_data['招生人数'].isna().all():
+            招生人数 = group_data['招生人数'].sum()
+
+        # 添加到结果列表 - 只保留指定的列
+        result_row = {
+            '学校名称': 学校,
+            '省份': 省份,
+            '招生类别': 招生类别,
+            '层次': 层次,
+            '招生批次': 批次,
+            '招生类型': 招生类型,
+            # ⭐ 固定空字段（不参与任何逻辑）
+            '选测等级': '',
+            '最高分': 最高分,
+            '最低分': 最低分,
+            '平均分': pd.NA,
+            '最高位次': pd.NA,
+            '最低位次': 最低分位次,
+            '平均位次': pd.NA,
+            '最低分位次': 最低分位次,
+            '录取人数': 录取人数,
+            '招生人数': 招生人数,
+            '数据来源': 数据来源,
+            # ⭐ 固定空字段
+            '省控线科类': '',
+            '省控线批次': '',
+            '省控线备注': '',
+            '专业组代码': 专业组代码,
+            '首选科目': 首选科目,
+            '院校招生代码': (
+                str(
+                    min_score_row.get('院校招生代码',
+                                      min_score_row.get('招生代码', ''))
+                ).replace('^', '').strip()
+            ),
+            '层次': 层次
+        }
+
+        results.append(result_row)
+
+    log(f"分组处理完成，共 {group_count} 个分组")
+
+    # 创建结果DataFrame
+    result_df = pd.DataFrame(results)
+
+    log(f"分组后共有 {len(result_df)} 组数据")
+
+    # 确保数值字段保持正确的数据类型
+    numeric_columns = ['最高分', '最低分', '最低分位次', '录取人数', '招生人数']
+    for col in numeric_columns:
+        if col in result_df.columns:
+            result_df[col] = pd.to_numeric(result_df[col], errors='coerce')
+
+    log(f"处理完成，共生成 {len(result_df)} 行记录")
+
+    return result_df
+# ------------------------tab 6 ------------------------
+with tab6:
+    st.subheader("院校分提取")
+    st.markdown("适用于高考数据库直接导出的专业分数据")
+    st.markdown("""
+    本工具按照以下规则处理专业分数据：
+
+    - **分组规则**：学校、省份、科类、批次、层次、招生类型、专业组代码
+
+    - **处理规则**：
+      - 所有列都根据源数据决定，有值就处理，没值就置空
+      - 最高分 = 组内最高分的最大值
+      - 最低分 = 组内最低分的最小值
+      - 最低分位次 = 最低分对应的位次
+      - 录取人数 = 组内录取人数总和
+      - 招生人数 = 组内招生人数总和
+    """)
+
+    # 文件上传
+    uploaded_file_admission = st.file_uploader(
+        "上传专业分数据Excel文件",
+        type=['xlsx'],
+        help="请上传包含专业分数据的Excel文件，系统会输出固定的15列数据",
+        key="admission_excel"
+    )
+
+    if uploaded_file_admission is not None:
+        try:
+            # 读取上传的文件
+            df_source = pd.read_excel(uploaded_file_admission)
+
+            # 显示源数据信息
+            st.subheader("📊 源数据信息")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.write(f"**总记录数:** {len(df_source)}")
+            with col2:
+                st.write(f"**总列数:** {len(df_source.columns)}")
+            with col3:
+                st.write(f"**所有列名:** {list(df_source.columns)}")
+
+            # 显示源数据预览
+            st.write("**源数据预览:**")
+            st.dataframe(df_source.head(10), use_container_width=True)
+
+            # 处理按钮
+            if st.button("🚀 开始处理专业分数据", type="primary", key="admission_btn"):
+                with st.spinner("正在处理专业分数据，请稍候..."):
+                    result_df = process_admission_data(df_source)
+
+                if len(result_df) == 0:
+                    st.error("警告：没有生成任何数据，请检查源数据文件")
+                    st.stop()
+
+                # 显示处理结果
+                st.subheader("✅ 处理结果")
+
+                # 显示统计信息
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("学校数量", result_df['学校名称'].nunique())
+                with col2:
+                    st.metric("省份数量", result_df['省份'].nunique())
+                with col3:
+                    st.metric("总记录数", len(result_df))
+                with col4:
+                    st.metric("输出列数", len(result_df.columns))
+
+                # 显示输出列信息
+                st.write(f"**输出列名 ({len(result_df.columns)}列):**")
+                output_columns = [
+                    '学校名称', '省份', '招生类别', '招生批次', '招生类型', '选测等级',
+                    '最高分', '最低分', '平均分',
+                    '最高位次', '最低位次', '平均位次',
+                    '录取人数', '招生人数', '数据来源',
+                    '省控线科类', '省控线批次', '省控线备注',
+                    '专业组代码', '首选科目', '院校招生代码', '层次'
+                ]
+                for i, col in enumerate(output_columns, 1):
+                    st.write(f"{i}. {col}")
+
+                # 显示数据预览
+                st.dataframe(result_df[output_columns], use_container_width=True)
+
+                # 显示字段统计
+                st.subheader("📈 字段数据统计")
+
+                # 检查各字段的有效数据比例
+                st.write("**各字段有效数据比例:**")
+                stats_data = []
+                for col in output_columns:
+                    if col in result_df.columns:
+                        total = len(result_df)
+                        valid = result_df[col].notna().sum()
+                        if result_df[col].dtype == 'object':
+                            # 对于字符串列，检查非空字符串
+                            valid = (result_df[col].notna() & (result_df[col] != '')).sum()
+                        percentage = (valid / total) * 100 if total > 0 else 0
+                        stats_data.append({
+                            '字段名': col,
+                            '有效数据数': valid,
+                            '有效比例%': f"{percentage:.1f}%"
+                        })
+
+                stats_df = pd.DataFrame(stats_data)
+                st.dataframe(stats_df, use_container_width=True)
+
+                # 下载功能
+                st.subheader("📥 下载处理结果")
+
+                # 将DataFrame转换为Excel字节流，确保列顺序
+                output = BytesIO()
+                from openpyxl.utils import get_column_letter
+
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    result_df[output_columns].to_excel(writer, index=False, sheet_name='处理结果')
+
+                    ws = writer.book['处理结果']
+
+                    text_cols = ['专业组代码', '院校招生代码']
+
+                    for col_name in text_cols:
+                        if col_name in output_columns:
+                            col_idx = output_columns.index(col_name) + 1
+                            col_letter = get_column_letter(col_idx)
+
+                            for row in range(2, ws.max_row + 1):
+                                ws[f"{col_letter}{row}"].number_format = "@"
+
+                processed_data = output.getvalue()
+
+                st.download_button(
+                    label="📥 下载处理后的Excel文件",
+                    data=processed_data,
+                    file_name="分组处理后的专业分数据.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_admission"
+                )
+
+        except Exception as e:
+            st.error(f"处理过程中出现错误: {e}")
+            st.info("请检查上传的文件格式是否正确")
 
 # ------------------------ Footer ------------------------
 st.markdown("---")
