@@ -1203,7 +1203,15 @@ with tab4:
                     final_rows.append(merge_plan_score(plan_row, score_row))
 
                 final_df = pd.DataFrame(final_rows)
-                unmatched_df = pd.DataFrame(unmatched_rows).drop(columns=["_key"], errors="ignore")
+                unmatched_formatted = []
+
+                for plan_row in unmatched_rows:
+                    empty_score = pd.Series(dtype=object)  # ⭐ 空分数行
+                    unmatched_formatted.append(
+                        merge_plan_score(plan_row, empty_score)
+                    )
+
+                unmatched_df = pd.DataFrame(unmatched_formatted)
 
                 output = BytesIO()
                 with pd.ExcelWriter(output, engine="openpyxl") as writer:
