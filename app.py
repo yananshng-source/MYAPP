@@ -794,7 +794,9 @@ with tab4:
     st.markdown("""
     ### 📋 功能说明
     将招生计划和分数表进行智能匹配，匹配成功后自动转换为专业分模板格式。
-
+    
+    加入了事先校验上传的计划表和分数表是否有重复数据的逻辑（同一学校科类层次批次招生类型专业），避免有未处理到的重复数据导致分数匹配错误
+    
     **匹配规则**（计划表和分数表需保持一致）:
     - 学校
     - 省份  
@@ -807,10 +809,10 @@ with tab4:
     1. **分数表** - 整理好的需要入库的分数（可按下载的模板整理）
     2. **计划表** - 从高考数据库导出的计划数据
 
-    3.**重复数据是指一条计划有两条对应分数**
+    3.**重复匹配人工确认区-重复数据是指一条计划有两条对应分数或两条计划对应一条分数**
 
     **⚠️ 重要提示：**
-    处理完的数据需要仔细检查一遍，确保匹配准确！""")
+    处理完的数据需要抽查一下，确保匹配准确！""")
 
     # ================= 匹配配置 =================
     MATCH_KEYS = ["学校", "省份", "科类", "层次", "批次", "招生类型", "专业"]
@@ -849,6 +851,53 @@ with tab4:
             })
 
         return df
+
+
+
+            
+
+    #------------------------校验计划表 分数表是否有重复数据 学校 省份 科类  批次  招生类型  专业 层次---------------#
+
+
+    def check_duplicates(df: pd.DataFrame, name: str) -> pd.DataFrame:
+        # ⭐ 已加入“层次”
+        check_keys = ["学校", "省份", "科类", "层次", "批次", "招生类型", "专业"]
+
+        exist_keys = [k for k in check_keys if k in df.columns]
+        if len(exist_keys) < len(check_keys):
+            st.warning(f"⚠ {name} 缺少部分校验字段，已跳过重复校验")
+            return pd.DataFrame()
+
+        # 找重复
+        dup_mask = df.duplicated(subset=exist_keys, keep=False)
+        dup_df = df[dup_mask].copy()
+
+        if dup_df.empty:
+            st.success(f"✅ {name} 未发现重复数据")
+            return dup_df
+
+        # ⭐ 关键修复：避免 NaN 导致分组失效
+        dup_df[exist_keys] = dup_df[exist_keys].fillna("")
+
+        dup_df["_重复组"] = dup_df.groupby(exist_keys, dropna=False).ngroup()
+        group_count = dup_df["_重复组"].nunique()
+
+        st.error(f"❌ {name} 存在重复数据：共 {len(dup_df)} 条，{group_count} 组")
+
+        for gid, group in dup_df.groupby("_重复组"):
+            first = group.iloc[0]
+
+            title = " | ".join([
+                f"{k}:{first.get(k, '')}" for k in exist_keys
+            ])
+
+            with st.expander(f"🔁 重复组 {gid + 1}（{len(group)} 条）｜{title}"):
+                st.dataframe(
+                    group.drop(columns=["_重复组"]),
+                    use_container_width=True,
+                    height=300  # ⭐ 滚动关键
+                )
+        return dup_df
 
 
     def build_key(df: pd.DataFrame) -> pd.Series:
@@ -1065,6 +1114,14 @@ with tab4:
             plan_df = normalize(raw_plan_df)
             score_df = normalize(raw_score_df)
 
+            # ================= 重复校验 =================
+            st.subheader("🔍 源数据重复校验")
+
+            plan_dup = check_duplicates(plan_df, "计划表")
+            score_dup = check_duplicates(score_df, "分数表")
+
+
+
             st.success(f"✅ 成功读取数据！计划表: {len(plan_df)} 行，分数表: {len(score_df)} 行")
 
             # ================= 选科要求字段清洗（仅此一列） =================
@@ -1096,23 +1153,37 @@ with tab4:
             # 构建匹配键
             plan_df["_key"] = build_key(plan_df)
             score_df["_key"] = build_key(score_df)
+            plan_key_count = plan_df["_key"].value_counts()
             score_groups = score_df.groupby("_key")
 
-            # ================= 匹配 =================
+
+
+            # ================= 匹配（按key分组版） =================
             unique_rows = []
             duplicate_rows = []
             unmatched_rows = []
 
-            for _, plan_row in plan_df.iterrows():
-                key = plan_row["_key"]
+            plan_groups = plan_df.groupby("_key")
+
+            for key, plan_group in plan_groups:
                 if key not in score_groups.groups:
-                    unmatched_rows.append(plan_row)
+                    # 所有计划都未匹配
+                    for _, plan_row in plan_group.iterrows():
+                        unmatched_rows.append(plan_row)
                 else:
-                    group = score_groups.get_group(key)
-                    if len(group) == 1:
-                        unique_rows.append(merge_plan_score(plan_row, group.iloc[0]))
+                    score_group = score_groups.get_group(key)
+
+                    plan_count = len(plan_group)
+                    score_count = len(score_group)
+
+                    if plan_count == 1 and score_count == 1:
+                        # 真正1对1
+                        unique_rows.append(
+                            merge_plan_score(plan_group.iloc[0], score_group.iloc[0])
+                        )
                     else:
-                        duplicate_rows.append((plan_row, group))
+                        # ⭐ 按“组”进入人工区（核心）
+                        duplicate_rows.append((plan_group, score_group))
 
             # ================= 统计 =================
             st.success(
@@ -1131,17 +1202,27 @@ with tab4:
             st.progress(progress)
             st.caption(f"已确认 {confirmed} / {total_dup} 条（{int(progress * 100)}%）")
 
-            for i, (plan_row, candidates) in enumerate(duplicate_rows):
+            for i, (plan_group, candidates) in enumerate(duplicate_rows):
+                first = plan_group.iloc[0]
+
                 title = (
                     f"{i + 1}. "
-                    f"{plan_row.get('学校', '')} | "
-                    f"{plan_row.get('省份', '')} | "
-                    f"{plan_row.get('科类', '')} | "
-                    f"{plan_row.get('批次', '')} | "
-                    f"{plan_row.get('专业', '')} | "
-                    f"{safe_text(plan_row.get('备注', ''))} | "
-                    f"{safe_text(plan_row.get('招生类型', ''))}"
+                    f"{first.get('学校', '')} | "
+                    f"{first.get('省份', '')} | "
+                    f"{first.get('科类', '')} | "
+                    f"{first.get('批次', '')} | "
+                    f"{first.get('专业', '')} "
+                    f"（共{len(plan_group)}条计划）"
                 )
+                # ⭐ 在这里加（关键位置）
+                if len(plan_group) > 1 and len(candidates) == 1:
+                    tag = "⚠ 多计划→1分数"
+                elif len(plan_group) == 1 and len(candidates) > 1:
+                    tag = "⚠ 1计划→多分数"
+                else:
+                    tag = "⚠ 多对多"
+
+                title = tag + " | " + title
 
                 with st.expander(title, expanded=False):
                     if i in st.session_state.chosen:
@@ -1194,15 +1275,17 @@ with tab4:
                 final_rows = []
                 final_rows.extend(unique_rows)
 
-                for i, (plan_row, _) in enumerate(duplicate_rows):
+                for i, (plan_group, _) in enumerate(duplicate_rows):
                     score_idx = st.session_state.chosen[i]
 
                     if score_idx == "NO_SCORE":
-                        score_row = {}
+                        score_row = pd.Series(dtype=object)
                     else:
                         score_row = score_df.loc[score_idx]
 
-                    final_rows.append(merge_plan_score(plan_row, score_row))
+                    # ⭐ 对组内每一条计划都生成结果
+                    for _, plan_row in plan_group.iterrows():
+                        final_rows.append(merge_plan_score(plan_row, score_row))
 
                 final_df = pd.DataFrame(final_rows)
                 unmatched_formatted = []
