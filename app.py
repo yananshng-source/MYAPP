@@ -1178,9 +1178,10 @@ with tab4:
 
                     if plan_count == 1 and score_count == 1:
                         # 真正1对1
-                        unique_rows.append(
-                            merge_plan_score(plan_group.iloc[0], score_group.iloc[0])
-                        )
+                        row = merge_plan_score(plan_group.iloc[0], score_group.iloc[0])
+                        unique_rows.append(row)
+
+
                     else:
                         # ⭐ 按“组”进入人工区（核心）
                         duplicate_rows.append((plan_group, score_group))
@@ -1274,9 +1275,19 @@ with tab4:
             if st.button("📥 导出最终完整数据", disabled=not all_chosen):
                 final_rows = []
                 final_rows.extend(unique_rows)
+                used_score_indices = set()
+
+                # ⭐ 把唯一匹配用到的分数也补进去
+                for key, plan_group in plan_df.groupby("_key"):
+                    if key in score_groups.groups:
+                        score_group = score_groups.get_group(key)
+                        if len(plan_group) == 1 and len(score_group) == 1:
+                            used_score_indices.add(score_group.index[0])
 
                 for i, (plan_group, _) in enumerate(duplicate_rows):
                     score_idx = st.session_state.chosen[i]
+                    if score_idx != "NO_SCORE":
+                        used_score_indices.add(score_idx)
 
                     if score_idx == "NO_SCORE":
                         score_row = pd.Series(dtype=object)
@@ -1298,10 +1309,15 @@ with tab4:
 
                 unmatched_df = pd.DataFrame(unmatched_formatted)
 
+                # ===== ⭐ 未匹配分数（就放这里）=====
+                unused_score_df = score_df[~score_df.index.isin(used_score_indices)].copy()
+
+
                 output = BytesIO()
                 with pd.ExcelWriter(output, engine="openpyxl") as writer:
                     final_df.to_excel(writer, sheet_name="最终完整数据", index=False)
-                    unmatched_df.to_excel(writer, sheet_name="未匹配数据", index=False)
+                    unmatched_df.to_excel(writer, sheet_name="未匹配数据-计划", index=False)
+                    unused_score_df.to_excel(writer, sheet_name="未匹配数据-分数", index=False)
 
                     ws = writer.book["最终完整数据"]
                     for col_idx, col_name in enumerate(final_df.columns, start=1):
