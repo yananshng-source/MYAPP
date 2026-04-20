@@ -1310,7 +1310,27 @@ with tab4:
                 unmatched_df = pd.DataFrame(unmatched_formatted)
 
                 # ===== ⭐ 未匹配分数（就放这里）=====
-                unused_score_df = score_df[~score_df.index.isin(used_score_indices)].copy()
+                unused_score_rows = []
+
+                for _, score_row in score_df[~score_df.index.isin(used_score_indices)].iterrows():
+                    fake_plan = pd.Series({
+                        "学校": score_row.get("学校", ""),
+                        "省份": score_row.get("省份", ""),
+                        "专业": score_row.get("专业", ""),
+                        "专业方向": score_row.get("专业方向", ""),
+                        "备注": score_row.get("备注", ""),
+                        "层次": score_row.get("层次", ""),
+                        "科类": score_row.get("科类", ""),
+                        "批次": score_row.get("批次", ""),
+                        "招生类型": score_row.get("招生类型", ""),
+                        "招生人数": score_row.get("招生人数", ""),
+                    })
+
+                    unused_score_rows.append(
+                        merge_plan_score(fake_plan, score_row)
+                    )
+
+                unused_score_df = pd.DataFrame(unused_score_rows)
 
 
                 output = BytesIO()
@@ -1372,7 +1392,7 @@ with tab5:
     }
 
     ONLY_CODE_PROVINCE = {
-        "湖北", "江苏", "上海", "天津", "海南", "吉林"
+        "湖北", "江苏", "上海", "天津", "海南"
     }
 
     FINAL_COLUMNS = [
@@ -1391,6 +1411,37 @@ with tab5:
     # =========================
     # 工具函数
     # =========================
+    def read_file(file):
+        name = file.name.lower()
+
+        try:
+            if name.endswith(".csv"):
+                return pd.read_csv(
+                    file,
+                    dtype=str,
+                    encoding="utf-8",
+                    keep_default_na=False  # ✅ 关键
+                )
+
+            elif name.endswith(".xlsx"):
+                return pd.read_excel(
+                    file,
+                    dtype=str,
+                    engine="openpyxl",
+                    keep_default_na=False  # ✅ 关键
+                )
+
+            elif name.endswith(".xls"):
+                return pd.read_excel(
+                    file,
+                    dtype=str,
+                    engine="xlrd",
+                    keep_default_na=False  # ✅ 关键
+                )
+
+        except:
+            raise ValueError(f"读取失败: {file.name}")
+
     def to_float(x):
         if pd.isna(x):
             return None
@@ -1450,14 +1501,26 @@ with tab5:
 
 
     def build_group_code(row):
-        code = row["招生代码"]
-        gid = row["专业组编号"]
-        prov = row["省份"]
+        code = str(row["招生代码"]).strip() if pd.notna(row["招生代码"]) else ""
+        gid = str(row["专业组编号"]).strip() if pd.notna(row["专业组编号"]) else ""
+        prov = str(row["省份"]).strip()
 
-        if prov in GROUP_JOIN_PROVINCE and pd.notna(gid) and str(gid).strip() != "":
+        # 没有招生代码直接返回空
+        if not code:
+            return ""
+
+        # ✅ 吉林：招生代码 + 专业组编号（无括号）
+        if prov == "吉林" and gid:
+            return f"{code}{gid}"
+
+        # ✅ 原有：需要拼接括号的省份
+        if prov in GROUP_JOIN_PROVINCE and gid:
             return f"{code}（{gid}）"
+
+        # ✅ 只用招生代码的省份
         if prov in ONLY_CODE_PROVINCE:
             return code
+
         return ""
 
 
@@ -1472,7 +1535,7 @@ with tab5:
     # =========================
     c1, c2, c3 = st.columns(3)
     with c1:
-        prof_file = st.file_uploader("📥 上传【专业分（源数据）】", type=["xls", "xlsx"], key="prof_file_5")
+        prof_file = st.file_uploader("📥 上传【专业分（源数据）】", type=["xls", "xlsx", "csv"], key="prof_file_5")
     with c2:
         school_file = st.file_uploader("🏫 学校小范围数据导出", type=["xls", "xlsx"], key="school_file_5")
     with c3:
@@ -1482,9 +1545,9 @@ with tab5:
     # 主逻辑
     # =========================
     if prof_file and school_file and major_file:
-        df = pd.read_excel(prof_file, dtype=str)
-        school_df = pd.read_excel(school_file, dtype=str)
-        major_df = pd.read_excel(major_file, dtype=str)
+        df = read_file(prof_file)
+        school_df = read_file(school_file)
+        major_df = read_file(major_file)
 
         st.subheader("① 数据校验")
 
