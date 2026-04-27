@@ -1454,21 +1454,36 @@ with tab5:
             return None
 
 
+    def clean_code(x):
+        if pd.isna(x):
+            return ""
+        x = str(x).strip()
+        if x.endswith(".0"):
+            x = x[:-2]
+        return x
+
+
+
     def score_valid(row):
         max_s = to_float(row["最高分"])
         min_s = to_float(row["最低分"])
         avg_s = to_float(row["平均分"])
 
-        checks = []
+        # ❗新增：最低分必须存在且不能为0
+        if min_s is None or min_s == 0:
+            return False
 
-        if max_s is not None and min_s is not None:
-            checks.append(max_s >= min_s)
-        if max_s is not None and avg_s is not None:
-            checks.append(max_s >= avg_s)
-        if avg_s is not None and min_s is not None:
-            checks.append(avg_s >= min_s)
+        # 原有逻辑
+        if max_s is not None and max_s < min_s:
+            return False
 
-        return all(checks)
+        if avg_s is not None:
+            if avg_s < min_s:
+                return False
+            if max_s is not None and avg_s > max_s:
+                return False
+
+        return True
 
 
     def convert_subject(x):
@@ -1500,27 +1515,54 @@ with tab5:
         return "单科、多科均需选考", subjects
 
 
+    def map_xinjiang_batch(batch, province):
+        """
+        新疆特殊批次映射
+        """
+        if province != "新疆":
+            return batch
+
+        if pd.isna(batch):
+            return batch
+
+        batch_str = str(batch).strip()
+
+        # 映射规则
+        if batch_str == "本科一批-其他":
+            return "国家及地方专项、南疆单列、对口援疆计划本科一批次"
+        elif batch_str == "本科二批-其他":
+            return "国家及地方专项、南疆单列、对口援疆计划本科二批次"
+
+        return batch
+
+
     def build_group_code(row):
-        code = str(row["招生代码"]).strip() if pd.notna(row["招生代码"]) else ""
-        gid = str(row["专业组编号"]).strip() if pd.notna(row["专业组编号"]) else ""
         prov = str(row["省份"]).strip()
 
-        # 没有招生代码直接返回空
+        code = clean_code(row["招生代码"])
+        gid = clean_code(row["专业组编号"])
+
+        # ❗没有专业组编号 → 直接不给
+        if not gid:
+            return ""
+
+        # ❗没有招生代码 → 也不给
         if not code:
             return ""
 
-        # ✅ 吉林：招生代码 + 专业组编号（无括号）
-        if prov == "吉林" and gid:
+        # ✅ 吉林特殊（无括号）
+        if prov == "吉林":
             return f"{code}{gid}"
 
-        # ✅ 原有：需要拼接括号的省份
-        if prov in GROUP_JOIN_PROVINCE and gid:
+        # ✅ 需要拼括号的省份（沿用你原来的）
+        if prov in GROUP_JOIN_PROVINCE:
             return f"{code}（{gid}）"
 
-        # ✅ 只用招生代码的省份
+        # ✅ 只用招生代码的省份（你原来的规则）
         if prov in ONLY_CODE_PROVINCE:
             return code
 
+        # 默认（不给，避免乱拼）
         return ""
 
 
@@ -1572,10 +1614,19 @@ with tab5:
             bad_major["错误原因"] = "专业名称 + 一级层次 不存在"
             errors.append(bad_major[df.columns.tolist() + ["错误原因"]])
 
-        # 校验3：分数
+        # 在校验3的错误提示部分修改为：
         bad_score = df[~df.apply(score_valid, axis=1)].copy()
         if not bad_score.empty:
-            bad_score["错误原因"] = "分数关系错误（最高/平均/最低）"
+            # 添加更详细的错误原因说明
+            def get_score_error(row):
+                min_s = to_float(row["最低分"])
+                if min_s is None or min_s == 0:
+                    return "最低分为空或0"
+                # 其他错误...
+                return "分数关系错误（最高/平均/最低）"
+
+
+            bad_score["错误原因"] = bad_score.apply(get_score_error, axis=1)
             errors.append(bad_score)
 
         if errors:
@@ -1604,8 +1655,11 @@ with tab5:
         out["一级层次"] = df["一级层次"]
 
         out["招生科类"], out["首选科目"] = zip(*df["科类"].apply(convert_subject))
+        out["招生批次"] = df.apply(
+            lambda row: map_xinjiang_batch(row["批次"], row["省份"]),
+            axis=1
+        )
 
-        out["招生批次"] = df["批次"]
         out["招生类型（选填）"] = df["招生类型"]
 
         out["最高分"] = df["最高分"]
