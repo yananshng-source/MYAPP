@@ -170,121 +170,43 @@ def clean_dataframe_encoding(df):
     return df_clean
 
 
-def scrape_table(url_list, group_cols):
-    """
-    修复编码问题的网页表格抓取
-    """
-    session = requests.Session()
-    sheet_data = {}
-    all_data = []
-    errors = []
+def scrape_table(url_list, fill_cols=None, progress_callback=None):
+    output = BytesIO()
 
-    enumerated = list(enumerate(url_list, start=1))
-    for idx, url in progress_iter(enumerated, text="抓取网页表格中"):
-        try:
-            _, page_url = (idx, url)
-            log(f"正在抓取: {page_url}")
-            resp = safe_requests_get(session, page_url)
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
 
-            # 保存原始内容用于编码检测
-            original_content = resp.content
+        total = len(url_list)
 
-            # 自动检测编码
-            if resp.encoding is None or resp.encoding.lower() == 'iso-8859-1':
-                resp.encoding = resp.apparent_encoding
-
-            text = resp.text
-            log(f"初始编码: {resp.encoding}, 内容长度: {len(text)}")
-
-            # 检测乱码特征
-            mojibake_patterns = ['Ã', 'â€', 'å', 'æ', 'è', 'é', 'ï¼']
-            has_mojibake = any(pattern in text for pattern in mojibake_patterns)
-
-            if has_mojibake:
-                log(f"检测到乱码，尝试修复...")
-                # 尝试常见中文编码
-                encodings_to_try = ['gbk', 'gb2312', 'gb18030', 'big5', 'utf-8']
-
-                for encoding in encodings_to_try:
-                    try:
-                        # 使用新编码重新解码
-                        decoded_text = original_content.decode(encoding, errors='ignore')
-                        # 检查是否还有乱码
-                        if not any(pattern in decoded_text for pattern in mojibake_patterns):
-                            text = decoded_text
-                            log(f"✅ 使用 {encoding} 编码成功解决乱码")
-                            break
-                        else:
-                            log(f"❌ {encoding} 编码仍有乱码")
-                    except Exception as e:
-                        log(f"尝试编码 {encoding} 失败: {e}", level="debug")
-                        continue
-
+        for i, url in enumerate(url_list):
             try:
-                dfs = pd.read_html(text)
-                log(f"成功读取 {len(dfs)} 个表格")
-            except Exception as e:
-                msg = f"read_html 失败: {page_url} -> {e}"
-                log(msg, level="warning")
-                errors.append(msg)
-                # 尝试使用字节内容读取
-                try:
-                    log("尝试使用字节内容读取表格...")
-                    dfs = pd.read_html(original_content)
-                    log(f"字节内容读取成功: {len(dfs)} 个表格")
-                except Exception as e2:
-                    log(f"字节内容读取也失败: {e2}", level="warning")
+                tables = smart_fetch(url)
+
+                if not tables:
+                    log(f"{url} 未抓到表", "warning")
                     continue
 
-            for i, df in enumerate(dfs):
-                # 清理DataFrame中的乱码
-                df_clean = clean_dataframe_encoding(df)
-                name = f"网页{idx}_表{i + 1}"
-                sheet_data[name] = df_clean
-                all_data.append(df_clean)
-                log(f"✅ 抓取到表格: {name} ({len(df_clean)} 行)")
+                # 👉 合并当前网页的所有表（仅当前页）
+                df = pd.concat(tables, ignore_index=True, sort=False)
 
-                # 显示表格预览信息
-                if len(df_clean) > 0:
-                    log(f"📊 表格预览 - 列: {list(df_clean.columns)}")
-                    if len(df_clean) >= 1:
-                        sample_data = df_clean.iloc[0].to_dict()
-                        log(f"📝 首行样例: {str(sample_data)[:100]}...")
+                # 👉 填充（可选）
+                df, used_cols = smart_fill(df, fill_cols)
 
-        except Exception as e:
-            error_msg = f"❌ 抓取 URL 失败: {url} -> {repr(e)}"
-            log(error_msg, level="warning")
-            errors.append(error_msg)
-            continue
+                # 👉 Sheet 名处理（防止超长/非法）
+                sheet_name = f"Sheet_{i+1}"
+                sheet_name = sheet_name[:31]
 
-    if sheet_data:
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            for name, df in sheet_data.items():
-                safe_name = name[:31]
-                df.to_excel(writer, sheet_name=safe_name, index=False)
-                log(f"💾 写入工作表: {safe_name}")
+                df.to_excel(writer, index=False, sheet_name=sheet_name)
 
-            if all_data:
-                try:
-                    combined_df = pd.concat(all_data, ignore_index=True)
-                    combined_df.to_excel(writer, sheet_name="汇总", index=False)
-                    log(f"📋 创建汇总表: {len(combined_df)} 行")
-                except Exception as e:
-                    log(f"合并汇总表失败: {e}", level="warning")
+                log(f"{url} → 写入 {sheet_name}（{len(df)} 行）")
 
-        output.seek(0)
+            except Exception as e:
+                log(f"{url} 失败: {e}", "error")
 
-        # 记录最终结果
-        total_tables = len(sheet_data)
-        total_rows = sum(len(df) for df in sheet_data.values())
-        log(f"🎉 抓取完成: {total_tables} 个表格, {total_rows} 行数据")
+            if progress_callback:
+                progress_callback(i + 1, total)
 
-        return output
-    else:
-        log("❌ 未抓取到任何表格。", level="warning")
-        return None
-
+    output.seek(0)
+    return output
 
 def download_images_from_urls(url_list, output_dir=None):
     """
@@ -569,8 +491,290 @@ def process_date_range(date_str, year):
 
     except Exception:
         return date_str, "格式错误", "格式错误"
+# ------------------------ tab1函数 ------------------------
+# ================= 工具函数（最终稳定版：只保留最佳表） =================
+
+import pandas as pd
+import requests
+from bs4 import BeautifulSoup
+from io import StringIO, BytesIO
+from datetime import datetime
+import streamlit as st
+import re
 
 
+# ================= 日志 =================
+def log(msg, level="info"):
+    s = f"{datetime.now().strftime('%H:%M:%S')} [{level.upper()}] {msg}"
+    print(s)
+    if "recent_logs" not in st.session_state:
+        st.session_state.recent_logs = []
+    st.session_state.recent_logs.append(s)
+
+
+# ================= 列名唯一 =================
+def make_columns_unique(df):
+    cols = list(df.columns)
+    new_cols = []
+    counter = {}
+
+    for col in cols:
+        col = str(col).strip()
+
+        if col == "" or col.lower().startswith("unnamed"):
+            col = "空列"
+
+        if col not in counter:
+            counter[col] = 0
+            new_cols.append(col)
+        else:
+            counter[col] += 1
+            new_cols.append(f"{col}_{counter[col]}")
+
+    df.columns = new_cols
+    return df
+
+
+# ================= 清理列 =================
+def clean_columns(df):
+    df = df.copy()
+
+    df = df.dropna(axis=1, how="all")
+
+    drop_cols = []
+    for col in df.columns:
+        if "Unnamed" in str(col):
+            if df[col].isna().mean() > 0.9:
+                drop_cols.append(col)
+
+    df = df.drop(columns=drop_cols, errors="ignore")
+
+    return df
+
+
+# ================= 表头压平 =================
+def flatten_columns(df):
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [
+            "_".join([str(c) for c in col if str(c) != "nan"]).strip()
+            for col in df.columns.values
+        ]
+    else:
+        df.columns = [str(c).strip() for c in df.columns]
+
+    return df
+
+
+# ================= pandas解析 =================
+def parse_tables_pandas(html):
+    tables = []
+
+    for header in [[0], [0,1], [0,1,2]]:
+        try:
+            t = pd.read_html(StringIO(html), header=header)
+            for df in t:
+                df = flatten_columns(df)
+                df = clean_columns(df)
+                df = make_columns_unique(df)
+                tables.append(df)
+        except:
+            continue
+
+    return tables
+
+
+# ================= DOM解析 =================
+def parse_tables_dom(html):
+    soup = BeautifulSoup(html, "html.parser")
+    tables = []
+
+    for table in soup.find_all("table"):
+        rows = []
+        for tr in table.find_all("tr"):
+            cols = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+            if cols:
+                rows.append(cols)
+
+        if len(rows) >= 2:
+            df = pd.DataFrame(rows)
+            df = make_columns_unique(df)
+            tables.append(df)
+
+    return tables
+
+
+# ================= 表去重 =================
+def table_hash(df):
+    try:
+        df2 = df.copy().fillna("")
+        df2 = df2.sort_index(axis=1)
+        return hash(pd.util.hash_pandas_object(df2, index=True).sum())
+    except:
+        return hash(str(df.values))
+
+
+def deduplicate_tables(tables):
+    seen = set()
+    result = []
+
+    for df in tables:
+        h = table_hash(df)
+        if h not in seen:
+            seen.add(h)
+            result.append(df)
+
+    return result
+
+
+# ================= ⭐ 表质量评分（核心） =================
+def score_table(df):
+    cols = list(df.columns)
+
+    score = 0
+
+    # ❌ 垃圾列名
+    score -= sum(str(c).startswith("Unnamed") for c in cols) * 5
+    score -= sum(str(c).isdigit() for c in cols) * 3
+
+    # ❌ 列太少
+    score -= max(0, 3 - len(cols)) * 2
+
+    # ✅ 招生关键词
+    score += sum(any(k in str(c) for k in ["专业","分","位","批次"]) for c in cols) * 3
+
+    # ✅ 数据量
+    score += df.notna().sum().sum() * 0.001
+
+    return score
+
+
+# ================= ⭐ 只保留最佳表 =================
+def pick_best_table(tables):
+    if not tables:
+        return []
+
+    scored = [(score_table(df), df) for df in tables]
+    scored.sort(reverse=True, key=lambda x: x[0])
+
+    best_score, best_df = scored[0]
+
+    log(f"表评分: {[round(s,2) for s,_ in scored]}")
+
+    # 阈值保护（防止全是垃圾）
+    if best_score < 0:
+        return []
+
+    return [best_df]
+
+
+# ================= 列排序 =================
+def reorder_columns(df):
+    priority = [
+        "学校名称", "专业名称", "省份",
+        "批次", "科类", "最低分", "位次"
+    ]
+
+    cols = list(df.columns)
+
+    ordered = [c for c in priority if c in cols]
+    rest = [c for c in cols if c not in ordered]
+
+    return df[ordered + rest]
+
+
+# ================= 填充 =================
+def smart_fill(df, manual_cols=None):
+    df = df.copy()
+
+    if not manual_cols:
+        return df, []
+
+    valid_cols = [c for c in manual_cols if c in df.columns]
+
+    log(f"填充列: {valid_cols}")
+
+    for col in valid_cols:
+        df[col] = df[col].replace("", None)
+        df[col] = df[col].ffill()
+
+    return df, valid_cols
+
+
+# ================= 抓取 =================
+def smart_fetch(url):
+    log(f"抓取: {url}")
+    tables = []
+
+    try:
+        r = requests.get(url, timeout=15)
+        r.encoding = r.apparent_encoding
+        html = r.text
+    except Exception as e:
+        log(f"请求失败: {e}", "error")
+        return []
+
+    tables += parse_tables_pandas(html)
+    tables += parse_tables_dom(html)
+
+    log(f"原始表数: {len(tables)}")
+
+    tables = deduplicate_tables(tables)
+    log(f"去重后: {len(tables)}")
+
+    tables = pick_best_table(tables)
+    log(f"保留表数: {len(tables)}")
+
+    return tables
+
+
+# ================= sheet名 =================
+def clean_sheet_name(url, idx):
+    name = re.sub(r"https?://", "", url)
+    name = name.split("/")[0]
+    name = re.sub(r"[\\/*?:\[\]]", "", name)
+    return f"{idx}_{name}"[:31]
+
+
+# ================= 主函数 =================
+def scrape_table(url_list, fill_cols=None, progress_callback=None):
+    output = BytesIO()
+
+    total = len(url_list)
+
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+
+        for i, url in enumerate(url_list):
+
+            try:
+                tables = smart_fetch(url)
+
+                if not tables:
+                    log(f"{url} 未抓到有效表", "warning")
+                    continue
+
+                df = pd.concat(tables, ignore_index=True, sort=False)
+
+                df = clean_columns(df)
+                df = make_columns_unique(df)
+
+                df, used_cols = smart_fill(df, fill_cols)
+
+                df = reorder_columns(df)
+
+                sheet_name = clean_sheet_name(url, i+1)
+
+                df.to_excel(writer, index=False, sheet_name=sheet_name)
+
+                log(f"写入 {sheet_name} 行数: {len(df)}")
+
+            except Exception as e:
+                log(f"{url} 失败: {e}", "error")
+
+            if progress_callback:
+                progress_callback(i+1, total)
+
+    output.seek(0)
+    return output
 # ------------------------ Streamlit UI ------------------------
 st.title("🧰 综合处理工具箱 - 完整版（带进度条 & 日志）")
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
@@ -588,94 +792,105 @@ with st.sidebar.expander("运行日志（最新）", expanded=True):
     for line in st.session_state.recent_logs[-200:]:
         st.text(line)
 
-# ------------------------ Tab 1: 网页表格抓取 ------------------------
+# ------------------------ Tab1: 网页表格抓取 ------------------------
 with tab1:
-    st.subheader("网页表格抓取")
-    st.markdown("同时抓取多个链接的表格，适用于招生快讯类的录取数据")
-    urls_text = st.text_area("输入网页URL列表（每行一个）", height=160,
-                             placeholder="例如:\nhttps://example.com/table1\nhttps://example.com/table2")
-    group_cols = st.text_input("分组列（逗号分隔，可选）",
-                               placeholder="例如: 省份,批次,科类")
+    st.subheader("网页表格抓取（手动填充版）🔥")
+    st.markdown("支持：复杂网页抓取 + 多表合并 + 手动填充")
 
-    # 添加调试选项
+    # 初始化日志
+    if "recent_logs" not in st.session_state:
+        st.session_state.recent_logs = []
+
+    urls_text = st.text_area(
+        "输入网页URL列表（每行一个）",
+        height=160,
+        placeholder="https://xxx\nhttps://xxx"
+    )
+
+    # ===== 手动填充（选填）=====
+    manual_cols_input = st.text_input(
+        "手动填充列（选填）",
+        placeholder="例如: 省份,批次,科类（支持中文逗号）"
+    )
+
+    # ===== 高级选项 =====
     with st.expander("🔧 高级选项", expanded=False):
-        debug_mode = st.checkbox("启用调试模式", value=True,
-                                 help="显示详细的处理日志和编码信息")
-        show_preview = st.checkbox("显示表格预览", value=True,
-                                   help="在日志中显示表格的前几行数据")
+        debug_mode = st.checkbox("显示日志", value=True)
 
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        if st.button("🚀 开始抓取表格", key="scrape", type="primary"):
-            url_list = [u.strip() for u in urls_text.splitlines() if u.strip()]
-            if not url_list:
-                st.warning("请先输入有效URL列表")
-            else:
-                try:
-                    # 显示处理状态
-                    status_placeholder = st.empty()
-                    progress_placeholder = st.empty()
-                    result_placeholder = st.empty()
+    if st.button("🚀 开始抓取", type="primary"):
 
-                    status_placeholder.info(f"🔄 开始抓取 {len(url_list)} 个网页...")
+        # ===== URL处理 =====
+        url_list = [u.strip() for u in urls_text.splitlines() if u.strip()]
 
-                    # 开始抓取
-                    with progress_placeholder.container():
-                        output = scrape_table(url_list, group_cols)
+        if not url_list:
+            st.warning("⚠️ 请先输入URL")
+            st.stop()
 
-                    if output:
-                        status_placeholder.success("✅ 抓取完成！")
+        # ===== 填充列处理（唯一正确写法）=====
+        import re
 
-                        # 显示统计信息
-                        total_size = len(output.getvalue()) / 1024  # KB
-                        result_placeholder.success(
-                            f"**抓取结果:**\n"
-                            f"- 生成Excel文件大小: {total_size:.1f} KB\n"
-                            f"- 包含 {len([k for k in st.session_state.recent_logs if '抓取到表格' in k])} 个表格\n"
-                            f"- 查看侧边栏日志了解详细信息"
-                        )
+        if manual_cols_input:
+            fill_cols = re.split(r"[,\，]", manual_cols_input)
+            fill_cols = [c.strip() for c in fill_cols if c.strip()]
+            if not fill_cols:
+                fill_cols = None
+        else:
+            fill_cols = None
 
-                        # 显示调试信息
-                        if debug_mode:
-                            debug_expander = st.expander("📋 详细处理日志", expanded=False)
-                            with debug_expander:
-                                # 显示相关的处理日志
-                                relevant_logs = [
-                                    log for log in st.session_state.recent_logs
-                                    if any(keyword in log for keyword in [
-                                        '正在抓取', '初始编码', '检测到乱码', '使用编码',
-                                        '成功读取', '抓取到表格', '表格预览'
-                                    ])
-                                ]
-                                for log_entry in relevant_logs[-20:]:  # 显示最近20条相关日志
-                                    st.text(log_entry)
+        # ===== 提示当前策略 =====
+        if fill_cols:
+            st.info(f"🧠 当前填充列: {fill_cols}")
+        else:
+            st.info("🧠 未设置填充列（将不进行填充）")
 
-                        # 下载按钮
-                        st.download_button(
-                            "📥 下载抓取表格",
-                            data=output.getvalue(),
-                            file_name=f"网页抓取_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                            help="包含所有抓取到的表格和汇总表",
-                            type="primary"
-                        )
-                    else:
-                        status_placeholder.warning("⚠️ 未抓取到表格数据")
-                        # 显示错误信息
-                        error_logs = [log for log in st.session_state.recent_logs
-                                      if "失败" in log or "错误" in log or "❌" in log]
-                        if error_logs:
-                            st.error("❌ 处理过程中出现以下问题:")
-                            for error in error_logs[-10:]:
-                                st.text(error)
+        # ===== UI组件 =====
+        status_placeholder = st.empty()
+        progress_bar = st.progress(0)
 
-                except Exception as e:
-                    log(f"❌ 抓取表格总流程失败: {e}", level="error")
-                    st.error(f"❌ 抓取表格出错: {str(e)}")
-                    # 显示详细错误
-                    if debug_mode:
-                        with st.expander("🔍 错误详情", expanded=False):
-                            st.code(traceback.format_exc())
+        status_placeholder.info(f"🔄 正在抓取 {len(url_list)} 个网页...")
 
+        def progress_callback(i, total):
+            progress_bar.progress(i / total)
+
+        # ===== 执行 =====
+        with st.spinner("抓取中，请稍候..."):
+            output = scrape_table(
+                url_list,
+                fill_cols=fill_cols,
+                progress_callback=progress_callback
+            )
+
+        # ===== 结果 =====
+        if output:
+            status_placeholder.success("✅ 抓取完成！")
+
+            total_size = len(output.getvalue()) / 1024
+
+            st.success(
+                f"""
+                **抓取结果**
+                - 文件大小: {total_size:.1f} KB
+                - 已合并所有表格 ✅
+                - 已处理复杂结构 ✅
+                """
+            )
+
+            st.download_button(
+                "📥 下载Excel",
+                data=output.getvalue(),
+                file_name=f"网页抓取_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                type="primary"
+            )
+
+        else:
+            status_placeholder.error("❌ 未抓取到表格数据")
+
+    # ===== 日志 =====
+    if debug_mode:
+        with st.expander("📋 处理日志", expanded=False):
+            logs = st.session_state.recent_logs[-50:]
+            for log_entry in logs:
+                st.text(log_entry)
 # ------------------------ Tab 2: 网页图片下载 ------------------------
 with tab2:
     st.subheader("网页图片下载")
