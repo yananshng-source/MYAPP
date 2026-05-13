@@ -1012,11 +1012,14 @@ with tab4:
     
     加入了事先校验上传的计划表和分数表是否有重复数据的逻辑（同一学校科类层次批次招生类型专业），避免有未处理到的重复数据导致分数匹配错误
     
+    
+    加入了根据 学校+省份+科类+层次+专业+招生类型 匹配批次的逻辑，分数表可以不填批次，如果批次唯一则自动填充，如果批次不唯一则提示
+    
     **匹配规则**（计划表和分数表需保持一致）:
     - 学校
     - 省份  
     - 科类
-    - 批次
+    - 批次（可以根据计划表匹配，可不填）
     - 层次
     - 专业
     - 招生类型
@@ -1044,6 +1047,36 @@ with tab4:
     ]
 
     TEXT_COLUMNS = {"专业组代码", "招生代码", "专业代码"}
+
+    # ================= 分数表批次自动补全 =================
+    BATCH_FILL_KEYS = [
+        "学校",
+        "省份",
+        "科类",
+        "层次",
+        "专业",
+        "招生类型"
+    ]
+
+
+    def build_fill_batch_key(df: pd.DataFrame) -> pd.Series:
+        cols = []
+
+        for c in BATCH_FILL_KEYS:
+            norm_col = c + "_norm"
+
+            if norm_col in df.columns:
+                cols.append(norm_col)
+
+        if not cols:
+            return pd.Series([""] * len(df), index=df.index)
+
+        return (
+            df[cols]
+            .fillna("")
+            .astype(str)
+            .agg("||".join, axis=1)
+        )
 
 
     # ================= 工具函数 =================
@@ -1328,6 +1361,168 @@ with tab4:
             # 数据标准化
             plan_df = normalize(raw_plan_df)
             score_df = normalize(raw_score_df)
+
+            # =====================================================
+            # 批次字段统一清洗（非常重要）
+            # =====================================================
+
+            plan_df["批次"] = (
+                plan_df["批次"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+            )
+
+            score_df["批次"] = (
+                score_df["批次"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+            )
+
+            # =====================================================
+            # 分数表批次自动补全
+            # =====================================================
+
+            # 构建key（不含批次）
+            plan_df["_fill_batch_key"] = build_fill_batch_key(plan_df)
+            score_df["_fill_batch_key"] = build_fill_batch_key(score_df)
+
+            # 同key对应的批次
+            plan_batch_map = (
+                plan_df.groupby("_fill_batch_key")["批次"]
+                .apply(
+                    lambda x: sorted(
+                        set(
+                            str(i).strip()
+                            for i in x
+                            if pd.notna(i) and str(i).strip()
+                        )
+                    )
+                )
+                .to_dict()
+            )
+
+            # 冲突记录
+            batch_conflict_rows = []
+
+            # 遍历分数表
+            for idx, row in score_df.iterrows():
+
+                # 已有批次直接跳过
+                current_batch = str(row.get("批次", "")).strip()
+
+                if current_batch:
+                    continue
+
+                key = row["_fill_batch_key"]
+
+                # 计划表里的批次
+                plan_batches = plan_batch_map.get(key, [])
+
+                # 没找到计划
+                if len(plan_batches) == 0:
+                    continue
+
+                # ================= 只有一个批次 -> 自动补 =================
+                if len(plan_batches) == 1:
+
+                    score_df.at[idx, "批次"] = plan_batches[0]
+
+                # ================= 多个批次 -> 记录冲突 =================
+                else:
+
+                    batch_conflict_rows.append({
+                        "学校": row.get("学校", ""),
+                        "省份": row.get("省份", ""),
+                        "科类": row.get("科类", ""),
+                        "层次": row.get("层次", ""),
+                        "专业": row.get("专业", ""),
+                        "招生类型": row.get("招生类型", ""),
+                        "计划表存在批次": "、".join(plan_batches)
+                    })
+
+            # ⭐ 非常重要：补完批次后重新normalize
+            score_df = normalize(score_df)
+
+            # =====================================================
+            # 强制保留补完后的批次
+            # =====================================================
+
+            score_df["批次"] = (
+                score_df["批次"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+            )
+
+            # =====================================================
+            # 下载补全后的分数表
+            # =====================================================
+
+            if batch_conflict_rows:
+
+                st.warning(
+                    f"⚠ 存在 {len(batch_conflict_rows)} 条无法自动补全批次的数据"
+                )
+
+                conflict_df = pd.DataFrame(batch_conflict_rows)
+
+                st.dataframe(
+                    conflict_df,
+                    use_container_width=True,
+                    height=400
+                )
+
+            else:
+
+                st.success("✅ 分数表批次自动补全完成")
+
+            # =====================================================
+            # 导出当前已补全的分数表
+            # =====================================================
+
+            output_score = BytesIO()
+
+            export_score_df = score_df.copy()
+
+            # 删除内部字段
+            drop_cols = [
+                c for c in export_score_df.columns
+                if c.endswith("_norm")
+                   or c.startswith("_")
+            ]
+
+            export_score_df = export_score_df.drop(
+                columns=drop_cols,
+                errors="ignore"
+            )
+
+            export_score_df.to_excel(
+                output_score,
+                index=False
+            )
+
+            output_score.seek(0)
+
+
+            st.write(
+                score_df[
+                    ["学校", "专业", "招生类型", "批次"]
+                ].head(30)
+            )
+
+            st.download_button(
+                "⬇ 下载【批次已自动补全】分数表",
+                data=output_score,
+                file_name="分数表_批次已补全.xlsx"
+            )
+
+            st.info(
+                "✅ 已自动使用补全后的批次继续进行正式匹配"
+            )
+
+    
 
             # ================= 重复校验 =================
             st.subheader("🔍 源数据重复校验")
