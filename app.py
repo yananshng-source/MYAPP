@@ -777,13 +777,14 @@ def scrape_table(url_list, fill_cols=None, progress_callback=None):
     return output
 # ------------------------ Streamlit UI ------------------------
 st.title("🧰 综合处理工具箱 - 完整版（带进度条 & 日志）")
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 , tab7= st.tabs([
     "网页表格抓取",
     "网页图片下载",
     "Excel日期处理",
     "分数匹配",
     "学业桥-高考专业分数据转换",
-    "院校分提取"
+    "院校分提取",
+    "学业桥-招生计划模板转换"
 
 ])
 
@@ -2585,6 +2586,495 @@ with tab6:
         except Exception as e:
             st.error(f"处理过程中出现错误: {e}")
             st.info("请检查上传的文件格式是否正确")
+
+
+# =====================================================
+# ======================= TAB 7 =======================
+# =====================================================
+with tab7:
+    st.header("📘 学业桥-招生计划模板转换")
+
+    st.markdown("""
+    ### 📋 功能说明
+    将学业桥导出的数据转换为【招生计划导入模板】
+
+    ### ✅ 强制校验
+    - 学校名称校验
+    - 专业名称 + 一级层次校验
+    - 招生计划人数不能为空或0
+
+    ### ℹ️ 非强制校验（仅备注）
+    - 学制校验
+    - 学费校验
+    """)
+
+    PLAN_COLUMNS = [
+        "学校名称",
+        "省份",
+        "招生专业",
+        "专业方向",
+        "专业备注",
+        "一级层次",
+        "招生科类",
+        "招生批次",
+        "招生类型",
+        "招生代码",
+        "招生人数",
+        "专业学制",
+        "学费",
+        "数据来源",
+        "专业组代码",
+        "首选科目",
+        "选科要求",
+        "次选科目",
+        "专业代码",
+        "学费单位",
+        "批次备注",
+
+        # 新增备注字段
+        "学制校验备注",
+        "学费校验备注"
+    ]
+
+    # =========================
+    # 学制校验
+    # =========================
+    def validate_duration(row):
+
+        major = str(row.get("专业名称", ""))
+        remark = str(row.get("专业备注", ""))
+        level = str(row.get("一级层次", ""))
+
+        try:
+            duration = int(float(row.get("学年", 0)))
+        except:
+            duration = 0
+
+        # 预科
+        if "预科" in major or "预科" in remark:
+            return duration == 1
+
+        medical_majors = [
+            "临床医学",
+            "预防医学",
+            "中医学",
+            "基础医学",
+            "医学影像学",
+            "口腔医学",
+            "麻醉学",
+            "动物医学"
+        ]
+
+        is_medical = any(m in major for m in medical_majors)
+
+        # 本科
+        if level in ["本科(普通)", "本科(职业)"]:
+
+            if is_medical:
+                return duration == 5
+
+            return duration >= 4
+
+        # 专科
+        elif level == "专科(高职)":
+            return duration == 3
+
+        return True
+
+    # =========================
+    # 中外合作识别
+    # =========================
+    def is_foreign_coop(row):
+
+        foreign_keywords = [
+            "中外合作",
+            "中日",
+            "中英",
+            "中澳",
+            "中法",
+            "中德",
+            "中韩",
+            "中加",
+            "中美"
+        ]
+
+        major = str(row.get("专业名称", ""))
+        remark = str(row.get("专业备注", ""))
+
+        return any(k in major or k in remark for k in foreign_keywords)
+
+    # =========================
+    # 文件上传
+    # =========================
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        plan_file = st.file_uploader(
+            "📥 上传【学业桥源数据】",
+            type=["xls", "xlsx", "csv"],
+            key="plan_file_tab7"
+        )
+
+    with c2:
+        school_file_7 = st.file_uploader(
+            "🏫 学校小范围数据导出",
+            type=["xls", "xlsx"],
+            key="school_file_tab7"
+        )
+
+    with c3:
+        major_file_7 = st.file_uploader(
+            "📘 专业信息表",
+            type=["xls", "xlsx"],
+            key="major_file_tab7"
+        )
+
+    # =========================
+    # 主逻辑
+    # =========================
+    if plan_file and school_file_7 and major_file_7:
+
+        df = read_file(plan_file)
+
+        school_df = read_file(school_file_7)
+
+        major_df = read_file(major_file_7)
+
+        # =========================
+        # 层次转换
+        # =========================
+        df["一级层次"] = df["层次"].map(LEVEL_MAP)
+
+        st.subheader("① 数据校验")
+
+        errors = []
+
+        # =========================
+        # 校验1：学校名称
+        # =========================
+        bad_school = df[
+            ~df["院校名称"].isin(set(school_df["学校名称"]))
+        ].copy()
+
+        if not bad_school.empty:
+
+            bad_school["错误原因"] = "学校名称不在学校小范围数据中"
+
+            errors.append(bad_school)
+
+        # =========================
+        # 校验2：专业 + 一级层次
+        # =========================
+        chk = df.merge(
+            major_df[["专业名称", "一级层次"]],
+            on=["专业名称", "一级层次"],
+            how="left",
+            indicator=True
+        )
+
+        bad_major = chk[
+            chk["_merge"] == "left_only"
+        ].copy()
+
+        if not bad_major.empty:
+
+            bad_major["错误原因"] = "专业名称 + 一级层次 不存在"
+
+            errors.append(
+                bad_major[
+                    df.columns.tolist() + ["错误原因"]
+                ]
+            )
+
+        # =========================
+        # 校验3：招生计划人数
+        # =========================
+        def valid_plan_num(x):
+
+            if pd.isna(x):
+                return False
+
+            s = str(x).strip()
+
+            if s == "" or s == "0":
+                return False
+
+            try:
+                return float(s) > 0
+            except:
+                return False
+
+        bad_plan = df[
+            ~df["招生计划人数"].apply(valid_plan_num)
+        ].copy()
+
+        if not bad_plan.empty:
+
+            bad_plan["错误原因"] = "招生计划人数为空或0"
+
+            errors.append(bad_plan)
+
+        # =========================
+        # 强制校验错误汇总
+        # =========================
+        if errors:
+
+            err_df = pd.concat(
+                errors,
+                ignore_index=True
+            )
+
+            st.error(f"❌ 校验失败，共 {len(err_df)} 条")
+
+            st.dataframe(err_df)
+
+            st.download_button(
+                "📥 下载错误明细",
+                data=to_excel(err_df),
+                file_name="招生计划-校验错误明细.xlsx"
+            )
+
+            st.stop()
+
+        st.success("✅ 强制校验通过")
+
+        # =========================
+        # 学制校验（仅备注）
+        # =========================
+        df["学制校验备注"] = ""
+
+        bad_duration_mask = ~df.apply(
+            validate_duration,
+            axis=1
+        )
+
+        df.loc[
+            bad_duration_mask,
+            "学制校验备注"
+        ] = "专业学制异常"
+
+        # =========================
+        # 学费校验（仅备注）
+        # =========================
+
+        # 学费数值
+        df["学费数值"] = pd.to_numeric(
+            df["学费"],
+            errors="coerce"
+        ).fillna(0)
+
+        # 学费单位
+        df["学费单位"] = (
+            df["学费单位"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+        # 中外合作
+        df["是否中外合作"] = df.apply(
+            is_foreign_coop,
+            axis=1
+        )
+
+        # 初始化
+        df["学费校验"] = True
+
+        df["学费异常原因"] = ""
+
+        # 有效学费
+        valid_fee_mask = df["学费数值"] > 0
+
+        # =========================
+        # 非中外合作低于2000
+        # =========================
+        condition1 = (
+            (~df["是否中外合作"])
+            & valid_fee_mask
+            & (df["学费数值"] < 2000)
+        )
+
+        df.loc[condition1, "学费校验"] = False
+
+        df.loc[
+            condition1,
+            "学费异常原因"
+        ] += "非中外合作学费低于2000；"
+
+        # =========================
+        # 与组均值差超2000
+        # =========================
+        group_cols = [
+            "院校名称",
+            "省份",
+            "一级层次",
+            "是否中外合作"
+        ]
+
+        df["组合学费均值"] = (
+            df.groupby(group_cols)["学费数值"]
+            .transform("mean")
+        )
+
+        df["与均值差"] = abs(
+            df["学费数值"] - df["组合学费均值"]
+        )
+
+        condition2 = (
+            valid_fee_mask
+            & (df["与均值差"] > 2000)
+        )
+
+        df.loc[condition2, "学费校验"] = False
+
+        df.loc[
+            condition2,
+            "学费异常原因"
+        ] += "与组均值差超2000；"
+
+        # =========================
+        # 学校内唯一学费
+        # =========================
+        fee_counts = (
+            df[valid_fee_mask]
+            .groupby("院校名称")["学费数值"]
+            .transform(lambda x: x.map(x.value_counts()))
+        )
+
+        df.loc[
+            valid_fee_mask,
+            "学费出现次数"
+        ] = fee_counts
+
+        df["学费出现次数"] = (
+            df["学费出现次数"]
+            .fillna(0)
+        )
+
+        condition3 = (
+            (df["学费出现次数"] == 1)
+            & valid_fee_mask
+        )
+
+        df.loc[condition3, "学费校验"] = False
+
+        df.loc[
+            condition3,
+            "学费异常原因"
+        ] += "学校内学费仅出现1次；"
+
+        # =========================
+        # 学费单位异常
+        # =========================
+        condition4 = (
+            valid_fee_mask
+            & (
+                ~df["学费单位"].isin([
+                    "元",
+                    "人民币元",
+                    "CNY"
+                ])
+            )
+        )
+
+        df.loc[condition4, "学费校验"] = False
+
+        df.loc[
+            condition4,
+            "学费异常原因"
+        ] += "学费单位异常；"
+
+        # =========================
+        # 学费备注
+        # =========================
+        df["学费校验备注"] = ""
+
+        df.loc[
+            ~df["学费校验"],
+            "学费校验备注"
+        ] = df["学费异常原因"]
+
+        # =========================
+        # 字段转换
+        # =========================
+        out = pd.DataFrame()
+
+        out["学校名称"] = df["院校名称"]
+
+        out["省份"] = df["省份"]
+
+        out["招生专业"] = df["专业名称"]
+
+        out["专业方向"] = ""
+
+        out["专业备注"] = df.get("专业备注", "")
+
+        out["一级层次"] = df["一级层次"]
+
+        out["招生科类"], out["首选科目"] = zip(
+            *df["科类"].apply(convert_subject)
+        )
+
+        out["招生批次"] = df.apply(
+            lambda row: map_xinjiang_batch(
+                row["批次"],
+                row["省份"]
+            ),
+            axis=1
+        )
+
+        out["招生类型"] = df.get("招生类型", "")
+
+        out["招生代码"] = df.get("招生代码", "")
+
+        out["招生人数"] = df["招生计划人数"]
+
+        # 学制
+        out["专业学制"] = df.get("学年", "")
+
+        # 学费
+        out["学费"] = df.get("学费", "")
+
+        out["数据来源"] = "学业桥"
+
+        out["专业组代码"] = df.apply(
+            build_group_code,
+            axis=1
+        )
+
+        out["选科要求"], out["次选科目"] = zip(
+            *df["报考要求"].apply(parse_requirement)
+        )
+
+        out["专业代码"] = df.get("专业代码", "")
+
+        # 学费单位
+        out["学费单位"] = df.get("学费单位", "")
+
+        # 固定空字段
+        out["批次备注"] = ""
+
+        # 校验备注
+        out["学制校验备注"] = df["学制校验备注"]
+
+        out["学费校验备注"] = df["学费校验备注"]
+
+        # 强制字段顺序
+        out = out[PLAN_COLUMNS]
+
+        # =========================
+        # 展示结果
+        # =========================
+        st.subheader("转换结果预览")
+
+        st.dataframe(out.head(20))
+
+        st.download_button(
+            "📤 下载【招生计划导入模板】",
+            data=to_excel(out),
+            file_name="招生计划导入模板.xlsx",
+            key="download_plan_tab7"
+        )
 
 # ------------------------ Footer ------------------------
 st.markdown("---")
