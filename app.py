@@ -1032,7 +1032,7 @@ with tab4:
     # ================= 匹配配置 =================
     MATCH_KEYS = ["学校", "省份", "科类", "层次", "批次", "招生类型", "专业"]
 
-    # ⚠ 只用于【人工重复匹配区】候选项展示
+    # ⚠ 只用于【人工重复匹配区-分数】候选项展示
     DISPLAY_FIELDS = [
         "学校",
         "省份",
@@ -1398,8 +1398,11 @@ with tab4:
 
 
                     else:
-                        # ⭐ 按“组”进入人工区（核心）
-                        duplicate_rows.append((plan_group, score_group))
+                        # ⭐ 按“计划”进入人工区（核心）
+                        duplicate_rows.append({
+                            "plans": plan_group,
+                            "scores": score_group
+                        })
 
             # ================= 统计 =================
             st.success(
@@ -1411,81 +1414,223 @@ with tab4:
             # ================= 重复匹配 =================
             st.header("⚠ 重复匹配人工确认区")
 
-            total_dup = len(duplicate_rows)
+            # 需要确认的总计划数
+            total_dup = sum(len(item["plans"]) for item in duplicate_rows)
+
+            # 已确认数量
             confirmed = len(st.session_state.chosen)
+
+            # 进度条
             progress = 1.0 if total_dup == 0 else confirmed / total_dup
 
             st.progress(progress)
-            st.caption(f"已确认 {confirmed} / {total_dup} 条（{int(progress * 100)}%）")
 
-            for i, (plan_group, candidates) in enumerate(duplicate_rows):
+            st.caption(
+                f"已确认 {confirmed} / {total_dup} 条计划（{int(progress * 100)}%）"
+            )
+
+            # 遍历重复组
+            for group_idx, item in enumerate(duplicate_rows):
+
+                plan_group = item["plans"]
+
+                candidates = item["scores"]
+
                 first = plan_group.iloc[0]
 
-                title = (
-                    f"{i + 1}. "
-                    f"{first.get('学校', '')} | "
-                    f"{first.get('省份', '')} | "
-                    f"{first.get('科类', '')} | "
-                    f"{first.get('批次', '')} | "
-                    f"{first.get('专业', '')} "
-                    f"（共{len(plan_group)}条计划）"
-                )
-                # ⭐ 在这里加（关键位置）
+                title_fields = [
+                    "学校",
+                    "省份",
+                    "科类",
+                    "批次",
+                    "专业",
+                    "备注",
+                    "招生类型"
+                ]
+
+                title_parts = []
+
+                for field in title_fields:
+
+                    value = first.get(field, "")
+
+                    if pd.notna(value) and str(value).strip():
+                        title_parts.append(str(value))
+
+                # ================= 重复类型 =================
                 if len(plan_group) > 1 and len(candidates) == 1:
+
                     tag = "⚠ 多计划→1分数"
+
                 elif len(plan_group) == 1 and len(candidates) > 1:
+
                     tag = "⚠ 1计划→多分数"
+
                 else:
+
                     tag = "⚠ 多对多"
 
-                title = tag + " | " + title
+                # ================= 标题字段 =================
+                title_fields = [
+                    "学校",
+                    "省份",
+                    "科类",
+                    "批次",
+                    "专业",
+                    "备注",
+                    "招生类型"
+                ]
+
+                title_parts = []
+
+                for field in title_fields:
+
+                    value = first.get(field, "")
+
+                    if pd.notna(value) and str(value).strip():
+                        title_parts.append(str(value))
+
+                title = (
+                        f"{group_idx + 1}. "
+                        f"{tag} | "
+                        + " | ".join(title_parts)
+                )
 
                 with st.expander(title, expanded=False):
-                    if i in st.session_state.chosen:
-                        st.success("✅ 已选择完成")
-                        if st.button("🔁 重新选择", key=f"reset_{i}"):
-                            del st.session_state.chosen[i]
-                            st.rerun()
-                    else:
-                        options = [
-                            (None, "请选择对应的分数记录"),
-                            ("NO_SCORE", "🚫 无对应分数（保留计划，不填分数）")
-                        ]
 
-                        diff_cols = diff_fields(candidates, DISPLAY_FIELDS)
+                    # 当前已经被使用的分数
+                    used_scores = {
+                        v for v in st.session_state.chosen.values()
+                        if v != "NO_SCORE"
+                    }
 
-                        for idx, r in candidates.iterrows():
-                            info = []
-                            for col in DISPLAY_FIELDS:
-                                if col in r and pd.notna(r[col]):
-                                    if col in diff_cols:
-                                        info.append(f"🔴【{col}】{r[col]}")
-                                    else:
-                                        info.append(f"{col}:{r[col]}")
-                            options.append((idx, " | ".join(info)))
+                    # ⭐ 逐计划处理（核心）
+                    for plan_idx, (_, plan_row) in enumerate(plan_group.iterrows()):
 
-                        selected = st.radio(
-                            "请选择对应的分数记录",
-                            options=options,
-                            format_func=lambda x: x[1],
-                            index=0,
-                            key=f"radio_{i}"
-                        )
+                        # 当前计划唯一key
+                        choice_key = f"{group_idx}_{plan_idx}"
 
-                        if selected[0] is not None:
-                            if st.button("✅ 确认本条选择", key=f"confirm_{i}"):
-                                st.session_state.chosen[i] = selected[0]
+                        st.markdown("---")
+
+                        # ================= 已确认 =================
+                        if choice_key in st.session_state.chosen:
+
+                            chosen_val = st.session_state.chosen[choice_key]
+
+                            # 无分数
+                            if chosen_val == "NO_SCORE":
+
+                                st.success("✅ 已确认：无对应分数")
+
+                            else:
+
+                                chosen_score = score_df.loc[chosen_val]
+
+                                st.success(
+                                    f"""
+                                    ✅ 已选择分数：
+
+                                    最低分：{chosen_score.get('最低分', '')}
+
+                                    平均分：{chosen_score.get('平均分', '')}
+
+                                    备注：{chosen_score.get('备注', '')}
+
+                                    招生类型：{chosen_score.get('招生类型', '')}
+                                    """
+                                )
+
+                            # 重新选择
+                            if st.button(
+                                    "🔁 重新选择",
+                                    key=f"reset_{choice_key}"
+                            ):
+                                del st.session_state.chosen[choice_key]
+
                                 st.rerun()
 
-            # ================= 导出 =================
-            st.header("📤 导出结果")
+                        # ================= 未确认 =================
+                        else:
+
+                            options = [
+                                (None, "请选择对应分数"),
+                                ("NO_SCORE", "🚫 无对应分数")
+                            ]
+
+                            # 候选差异字段
+                            diff_cols = diff_fields(
+                                candidates,
+                                DISPLAY_FIELDS
+                            )
+
+                            # 构建候选项
+                            for idx, r in candidates.iterrows():
+
+                                info = []
+
+                                for col in DISPLAY_FIELDS:
+
+                                    if col in r and pd.notna(r[col]):
+
+                                        # 高亮不同字段
+                                        if col in diff_cols:
+                                            info.append(f"🔴【{col}】{r[col]}")
+                                        else:
+                                            info.append(f"{col}:{r[col]}")
+
+                                label = " | ".join(info)
+
+                                # 已使用标记
+                                if idx in used_scores:
+                                    label = "🚫 已被其它计划使用 ｜ " + label
+
+                                options.append((idx, label))
+
+                            # 单选框
+                            selected = st.radio(
+                                "请选择对应分数",
+                                options=options,
+                                format_func=lambda x: x[1],
+                                index=0,
+                                key=f"radio_{choice_key}"
+                            )
+
+                            # 点击确认
+                            if selected[0] is not None:
+
+                                if st.button(
+                                        "✅ 确认本计划",
+                                        key=f"confirm_{choice_key}"
+                                ):
+
+                                    # 防止重复使用
+                                    if (
+                                            selected[0] != "NO_SCORE"
+                                            and selected[0] in used_scores
+                                    ):
+
+                                        st.error("❌ 该分数已被其它计划使用")
+
+                                    else:
+
+                                        st.session_state.chosen[choice_key] = selected[0]
+
+                                        st.rerun()
 
             if st.button("🧹 手动清理缓存（重新开始匹配）"):
                 clear_cache()
                 st.success("缓存已清理")
                 st.rerun()
 
-            all_chosen = len(st.session_state.chosen) == len(duplicate_rows)
+            total_need_confirm = sum(
+                len(item["plans"])
+                for item in duplicate_rows
+            )
+
+            all_chosen = (
+                    len(st.session_state.chosen)
+                    == total_need_confirm
+            )
 
             if st.button("📥 导出最终完整数据", disabled=not all_chosen):
                 final_rows = []
@@ -1499,19 +1644,32 @@ with tab4:
                         if len(plan_group) == 1 and len(score_group) == 1:
                             used_score_indices.add(score_group.index[0])
 
-                for i, (plan_group, _) in enumerate(duplicate_rows):
-                    score_idx = st.session_state.chosen[i]
-                    if score_idx != "NO_SCORE":
-                        used_score_indices.add(score_idx)
+                for group_idx, item in enumerate(duplicate_rows):
 
-                    if score_idx == "NO_SCORE":
-                        score_row = pd.Series(dtype=object)
-                    else:
-                        score_row = score_df.loc[score_idx]
+                    plan_group = item["plans"]
 
-                    # ⭐ 对组内每一条计划都生成结果
-                    for _, plan_row in plan_group.iterrows():
-                        final_rows.append(merge_plan_score(plan_row, score_row))
+                    # ⭐ 逐计划导出
+                    for plan_idx, (_, plan_row) in enumerate(plan_group.iterrows()):
+
+                        choice_key = f"{group_idx}_{plan_idx}"
+
+                        score_idx = st.session_state.chosen[choice_key]
+
+                        # 无分数
+                        if score_idx == "NO_SCORE":
+
+                            score_row = pd.Series(dtype=object)
+
+                        else:
+
+                            used_score_indices.add(score_idx)
+
+                            score_row = score_df.loc[score_idx]
+
+                        # 生成最终结果
+                        final_rows.append(
+                            merge_plan_score(plan_row, score_row)
+                        )
 
                 final_df = pd.DataFrame(final_rows)
                 unmatched_formatted = []
