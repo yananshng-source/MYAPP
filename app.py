@@ -1217,7 +1217,7 @@ with tab4:
 
         def extract_all(s: str) -> str:
             res = []
-            for k, v in subject_map():
+            for k, v in subject_map:
                 if k in s and v not in res:
                     res.append(v)
             return "".join(res)
