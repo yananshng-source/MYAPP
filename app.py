@@ -1231,7 +1231,7 @@ with tab4:
             return "不限科目专业组", ""
 
         must_keywords = ["必选", "均需", "全部", "全选", "均须", "3科必选"]
-        multi_keywords = ["或", "/", "任选", "选一", "至少", "其中", "之一"]
+        multi_keywords = ["或", "/", "任选", "选一", "至少", "其中", "之一","2选1","3选1"]
 
         is_must = any(k in text for k in must_keywords)
         is_multi = any(k in text for k in multi_keywords)
