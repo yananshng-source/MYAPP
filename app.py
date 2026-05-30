@@ -2582,6 +2582,78 @@ with tab6:
 # =====================================================
 # ======================= TAB 7 =======================
 # =====================================================
+def convert_subject(x):
+
+    if pd.isna(x):
+        return "", ""
+
+    x = str(x).strip()
+
+    if x in ["物理", "物理类"]:
+        return "物理类", "物"
+
+    if x in ["历史", "历史类"]:
+        return "历史类", "历"
+
+    if x in ["综合", "综合改革"]:
+        return "综合改革", ""
+
+    if x in ["文科", "理科", "文史", "理工"]:
+        return x, ""
+
+    return x, ""
+
+
+def parse_requirement(req, subject_type):
+
+    subject_type = str(subject_type).strip()
+
+    if subject_type in ["文科", "理科", "文史", "理工"]:
+        return "", ""
+
+    if pd.isna(req):
+        return "不限科目专业组", ""
+
+    req = str(req).strip()
+
+    if req == "":
+        return "不限科目专业组", ""
+
+    if "不限" in req:
+        return "不限科目专业组", ""
+
+    req = req.replace(" ", "")
+
+    if "且" in req:
+        return (
+            "单科、多科均需选考",
+            req.replace("且", "")
+        )
+
+    seps = [
+        "或",
+        "/",
+        "\\",
+        "+",
+        "＋",
+        "、",
+        ",",
+        "，"
+    ]
+
+    if any(s in req for s in seps):
+
+        tmp = req
+
+        for s in seps:
+            tmp = tmp.replace(s, "")
+
+        return "多门选考", tmp
+
+    return "单科、多科均需选考", req
+
+
+
 with tab7:
     st.header("📘 学业桥-招生计划模板转换")
 
@@ -3034,7 +3106,13 @@ with tab7:
         )
 
         out["选科要求"], out["次选科目"] = zip(
-            *df["报考要求"].apply(parse_requirement)
+            *df.apply(
+                lambda row: parse_requirement(
+                    row.get("报考要求", ""),
+                    row.get("科类", "")
+                ),
+                axis=1
+            )
         )
 
         out["专业代码"] = df.get("专业代码", "")
