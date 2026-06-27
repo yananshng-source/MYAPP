@@ -192,7 +192,7 @@ def scrape_table(url_list, fill_cols=None, progress_callback=None):
                 df, used_cols = smart_fill(df, fill_cols)
 
                 # 👉 Sheet 名处理（防止超长/非法）
-                sheet_name = f"Sheet_{i+1}"
+                sheet_name = f"Sheet_{i + 1}"
                 sheet_name = sheet_name[:31]
 
                 df.to_excel(writer, index=False, sheet_name=sheet_name)
@@ -207,6 +207,7 @@ def scrape_table(url_list, fill_cols=None, progress_callback=None):
 
     output.seek(0)
     return output
+
 
 def download_images_from_urls(url_list, output_dir=None):
     """
@@ -491,6 +492,8 @@ def process_date_range(date_str, year):
 
     except Exception:
         return date_str, "格式错误", "格式错误"
+
+
 # ------------------------ tab1函数 ------------------------
 # ================= 工具函数（最终稳定版：只保留最佳表） =================
 
@@ -569,7 +572,7 @@ def flatten_columns(df):
 def parse_tables_pandas(html):
     tables = []
 
-    for header in [[0], [0,1], [0,1,2]]:
+    for header in [[0], [0, 1], [0, 1, 2]]:
         try:
             t = pd.read_html(StringIO(html), header=header)
             for df in t:
@@ -640,7 +643,7 @@ def score_table(df):
     score -= max(0, 3 - len(cols)) * 2
 
     # ✅ 招生关键词
-    score += sum(any(k in str(c) for k in ["专业","分","位","批次"]) for c in cols) * 3
+    score += sum(any(k in str(c) for k in ["专业", "分", "位", "批次"]) for c in cols) * 3
 
     # ✅ 数据量
     score += df.notna().sum().sum() * 0.001
@@ -658,7 +661,7 @@ def pick_best_table(tables):
 
     best_score, best_df = scored[0]
 
-    log(f"表评分: {[round(s,2) for s,_ in scored]}")
+    log(f"表评分: {[round(s, 2) for s, _ in scored]}")
 
     # 阈值保护（防止全是垃圾）
     if best_score < 0:
@@ -761,7 +764,7 @@ def scrape_table(url_list, fill_cols=None, progress_callback=None):
 
                 df = reorder_columns(df)
 
-                sheet_name = clean_sheet_name(url, i+1)
+                sheet_name = clean_sheet_name(url, i + 1)
 
                 df.to_excel(writer, index=False, sheet_name=sheet_name)
 
@@ -771,13 +774,15 @@ def scrape_table(url_list, fill_cols=None, progress_callback=None):
                 log(f"{url} 失败: {e}", "error")
 
             if progress_callback:
-                progress_callback(i+1, total)
+                progress_callback(i + 1, total)
 
     output.seek(0)
     return output
+
+
 # ------------------------ Streamlit UI ------------------------
 st.title("🧰 综合处理工具箱 - 完整版（带进度条 & 日志）")
-tab1, tab2, tab3, tab4, tab5, tab6 , tab7= st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "网页表格抓取",
     "网页图片下载",
     "Excel日期处理",
@@ -850,8 +855,10 @@ with tab1:
 
         status_placeholder.info(f"🔄 正在抓取 {len(url_list)} 个网页...")
 
+
         def progress_callback(i, total):
             progress_bar.progress(i / total)
+
 
         # ===== 执行 =====
         with st.spinner("抓取中，请稍候..."):
@@ -1010,12 +1017,12 @@ with tab4:
     st.markdown("""
     ### 📋 功能说明
     将招生计划和分数表进行智能匹配，匹配成功后自动转换为专业分模板格式。
-    
+
     加入了事先校验上传的计划表和分数表是否有重复数据的逻辑（同一学校科类层次批次招生类型专业），避免有未处理到的重复数据导致分数匹配错误
-    
-    
+
+
     加入了根据 学校+省份+科类+层次+专业+招生类型 匹配批次的逻辑，分数表可以不填批次，如果批次唯一则自动填充，如果批次不唯一则提示
-    
+
     **匹配规则**（计划表和分数表需保持一致）:
     - 学校
     - 省份  
@@ -1102,11 +1109,7 @@ with tab4:
         return df
 
 
-
-            
-
-    #------------------------校验计划表 分数表是否有重复数据 学校 省份 科类  批次  招生类型  专业 层次---------------#
-
+    # ------------------------校验计划表 分数表是否有重复数据 学校 省份 科类  批次  招生类型  专业 层次---------------#
 
     def check_duplicates(df: pd.DataFrame, name: str) -> pd.DataFrame:
         # ⭐ 已加入“层次”
@@ -1204,23 +1207,67 @@ with tab4:
 
         )
         subject_map = [
+            # 政治
             ("思想政治", "政"),
             ("政治", "政"),
+            ("政", "政"),
 
+            # 物理
             ("物理", "物"),
-            ("历史", "历"),
-            ("化学", "化"),
-            ("生物", "生"),
-            ("地理", "地"),
-        ]
+            ("物", "物"),
 
+            # 历史
+            ("历史", "历"),
+            ("历", "历"),
+
+            # 化学
+            ("化学", "化"),
+            ("化", "化"),
+
+            # 生物
+            ("生物", "生"),
+            ("生", "生"),
+
+            # 地理
+            ("地理", "地"),
+            ("地", "地"),
+        ]
 
         def extract_all(s: str) -> str:
             res = []
-            for k, v in subject_map:
+
+            # 优先匹配全称
+            full_names = [
+                ("思想政治", "政"),
+                ("政治", "政"),
+                ("物理", "物"),
+                ("历史", "历"),
+                ("化学", "化"),
+                ("生物", "生"),
+                ("地理", "地"),
+            ]
+
+            for k, v in full_names:
                 if k in s and v not in res:
                     res.append(v)
+                    s = s.replace(k, "")  # 防止后面简称重复匹配
+
+            # 再匹配简称
+            short_names = [
+                ("政", "政"),
+                ("物", "物"),
+                ("历", "历"),
+                ("化", "化"),
+                ("生", "生"),
+                ("地", "地"),
+            ]
+
+            for k, v in short_names:
+                if k in s and v not in res:
+                    res.append(v)
+
             return "".join(res)
+
 
         def extract_after_reselect(s: str) -> str:
             if "再选" in s:
@@ -1231,7 +1278,7 @@ with tab4:
             return "不限科目专业组", ""
 
         must_keywords = ["必选", "均需", "全部", "全选", "均须", "3科必选"]
-        multi_keywords = ["或", "/", "任选", "选一", "至少", "其中", "之一","2选1","3选1"]
+        multi_keywords = ["或", "/", "任选", "选一", "至少", "其中", "之一", "2选1", "3选1"]
 
         is_must = any(k in text for k in must_keywords)
         is_multi = any(k in text for k in multi_keywords)
@@ -1497,7 +1544,6 @@ with tab4:
 
             output_score.seek(0)
 
-
             st.write(
                 score_df[
                     ["学校", "专业", "招生类型", "批次"]
@@ -1514,15 +1560,11 @@ with tab4:
                 "✅ 已自动使用补全后的批次继续进行正式匹配"
             )
 
-    
-
             # ================= 重复校验 =================
             st.subheader("🔍 源数据重复校验")
 
             plan_dup = check_duplicates(plan_df, "计划表")
             score_dup = check_duplicates(score_df, "分数表")
-
-
 
             st.success(f"✅ 成功读取数据！计划表: {len(plan_df)} 行，分数表: {len(score_df)} 行")
 
@@ -1557,8 +1599,6 @@ with tab4:
             score_df["_key"] = build_key(score_df)
             plan_key_count = plan_df["_key"].value_counts()
             score_groups = score_df.groupby("_key")
-
-
 
             # ================= 匹配（按key分组版） =================
             unique_rows = []
@@ -1892,7 +1932,6 @@ with tab4:
 
                 unused_score_df = pd.DataFrame(unused_score_rows)
 
-
                 output = BytesIO()
                 with pd.ExcelWriter(output, engine="openpyxl") as writer:
                     final_df.to_excel(writer, sheet_name="最终完整数据", index=False)
@@ -2002,6 +2041,7 @@ with tab5:
         except:
             raise ValueError(f"读取失败: {file.name}")
 
+
     def to_float(x):
         if pd.isna(x):
             return None
@@ -2021,7 +2061,6 @@ with tab5:
         if x.endswith(".0"):
             x = x[:-2]
         return x
-
 
 
     def score_valid(row):
@@ -2255,6 +2294,8 @@ with tab5:
             file_name="专业分-批量导入模板.xlsx",
             key="download_result_5"
         )
+
+
 # ------------------------ 院校分提取处理函数 ------------------------
 def process_admission_data(df_source):
     """
@@ -2435,6 +2476,8 @@ def process_admission_data(df_source):
     log(f"处理完成，共生成 {len(result_df)} 行记录")
 
     return result_df
+
+
 # ------------------------tab 6 ------------------------
 with tab6:
     st.subheader("院校分提取")
@@ -2583,7 +2626,6 @@ with tab6:
 # ======================= TAB 7 =======================
 # =====================================================
 def convert_subject(x):
-
     if pd.isna(x):
         return "", ""
 
@@ -2605,7 +2647,6 @@ def convert_subject(x):
 
 
 def parse_requirement(req, subject_type):
-
     subject_type = str(subject_type).strip()
 
     if subject_type in ["文科", "理科", "文史", "理工"]:
@@ -2653,7 +2694,6 @@ def parse_requirement(req, subject_type):
     return "单科、多科均需选考", req
 
 
-
 with tab7:
     st.header("📘 学业桥-招生计划模板转换")
 
@@ -2698,6 +2738,7 @@ with tab7:
         "学制校验备注",
         "学费校验备注"
     ]
+
 
     # =========================
     # 学制校验
@@ -2744,6 +2785,7 @@ with tab7:
 
         return True
 
+
     # =========================
     # 中外合作识别
     # =========================
@@ -2765,6 +2807,7 @@ with tab7:
         remark = str(row.get("专业备注", ""))
 
         return any(k in major or k in remark for k in foreign_keywords)
+
 
     # =========================
     # 文件上传
@@ -2820,7 +2863,6 @@ with tab7:
         ].copy()
 
         if not bad_school.empty:
-
             bad_school["错误原因"] = "学校名称不在学校小范围数据中"
 
             errors.append(bad_school)
@@ -2837,17 +2879,17 @@ with tab7:
 
         bad_major = chk[
             chk["_merge"] == "left_only"
-        ].copy()
+            ].copy()
 
         if not bad_major.empty:
-
             bad_major["错误原因"] = "专业名称 + 一级层次 不存在"
 
             errors.append(
                 bad_major[
                     df.columns.tolist() + ["错误原因"]
-                ]
+                    ]
             )
+
 
         # =========================
         # 校验3：招生计划人数
@@ -2867,12 +2909,12 @@ with tab7:
             except:
                 return False
 
+
         bad_plan = df[
             ~df["招生计划人数"].apply(valid_plan_num)
         ].copy()
 
         if not bad_plan.empty:
-
             bad_plan["错误原因"] = "招生计划人数为空或0"
 
             errors.append(bad_plan)
@@ -2881,7 +2923,6 @@ with tab7:
         # 强制校验错误汇总
         # =========================
         if errors:
-
             err_df = pd.concat(
                 errors,
                 ignore_index=True
@@ -2952,9 +2993,9 @@ with tab7:
         # 非中外合作低于2000
         # =========================
         condition1 = (
-            (~df["是否中外合作"])
-            & valid_fee_mask
-            & (df["学费数值"] < 2000)
+                (~df["是否中外合作"])
+                & valid_fee_mask
+                & (df["学费数值"] < 2000)
         )
 
         df.loc[condition1, "学费校验"] = False
@@ -2984,8 +3025,8 @@ with tab7:
         )
 
         condition2 = (
-            valid_fee_mask
-            & (df["与均值差"] > 2000)
+                valid_fee_mask
+                & (df["与均值差"] > 2000)
         )
 
         df.loc[condition2, "学费校验"] = False
@@ -3015,8 +3056,8 @@ with tab7:
         )
 
         condition3 = (
-            (df["学费出现次数"] == 1)
-            & valid_fee_mask
+                (df["学费出现次数"] == 1)
+                & valid_fee_mask
         )
 
         df.loc[condition3, "学费校验"] = False
@@ -3030,14 +3071,14 @@ with tab7:
         # 学费单位异常
         # =========================
         condition4 = (
-            valid_fee_mask
-            & (
-                ~df["学费单位"].isin([
-                    "元",
-                    "人民币元",
-                    "CNY"
-                ])
-            )
+                valid_fee_mask
+                & (
+                    ~df["学费单位"].isin([
+                        "元",
+                        "人民币元",
+                        "CNY"
+                    ])
+                )
         )
 
         df.loc[condition4, "学费校验"] = False
